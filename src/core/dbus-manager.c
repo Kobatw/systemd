@@ -653,6 +653,62 @@ static int method_get_unit_by_control_group(sd_bus_message *message, void *userd
         return reply_unit_path(u, message, error);
 }
 
+static int method_get_unit_by_pidfd(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        Manager *m = ASSERT_PTR(userdata);
+        _cleanup_free_ char *path = NULL;
+        int r, pidfd;
+        pid_t pid;
+        Unit *u;
+
+        assert(message);
+
+        r = sd_bus_message_read(message, "h", &pidfd);
+        if (r < 0)
+                return r;
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return sd_bus_error_set_errnof(error, r, "Failed to get PID from PIDFD: %m");
+
+        u = manager_get_unit_by_pid(m, pid);
+        if (!u)
+                return sd_bus_error_setf(error, BUS_ERROR_NO_UNIT_FOR_PID, "PID "PID_FMT" does not belong to any loaded unit.", pid);
+
+        r = mac_selinux_unit_access_check(u, message, "status", error);
+        if (r < 0)
+                return r;
+
+        path = unit_dbus_path(u);
+        if (!path)
+                return log_oom();
+
+        r = sd_bus_message_new_method_return(message, &reply);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_append(reply, "os", path, u->id);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_append_array(reply, 'y', u->invocation_id.bytes, sizeof(u->invocation_id.bytes));
+        if (r < 0)
+                return r;
+
+        /* Double-check that the process is still alive and that the PID did not change before returning the
+         * answer. */
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r == -ESRCH)
+                return sd_bus_error_setf(error,
+                                         BUS_ERROR_NO_SUCH_PROCESS,
+                                         "The PIDFD's PID "PID_FMT" changed during the lookup operation.",
+                                         pid);
+        if (r < 0)
+                return sd_bus_error_set_errnof(error, r, "Failed to get PID from PIDFD: %m");
+
+        return sd_bus_send(NULL, reply, NULL);
+}
+
 static int method_load_unit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Manager *m = ASSERT_PTR(userdata);
         const char *name;
@@ -1471,8 +1527,10 @@ static void log_caller(sd_bus_message *message, Manager *manager, const char *me
         (void) sd_bus_creds_get_comm(creds, &comm);
         caller = manager_get_unit_by_pid(manager, pid);
 
-        log_info("%s requested from client PID " PID_FMT " ('%s') (from unit '%s')...",
-                 method, pid, strna(comm), strna(caller ? caller->id : NULL));
+        log_info("%s requested from client PID " PID_FMT "%s%s%s%s%s%s...",
+                 method, pid,
+                 comm ? " ('" : "", strempty(comm), comm ? "')" : "",
+                 caller ? " (unit " : "", caller ? caller->id : NULL, caller ? ")" : "");
 }
 
 static int method_reload(sd_bus_message *message, void *userdata, sd_bus_error *error) {
@@ -2142,6 +2200,8 @@ static int method_get_default_target(sd_bus_message *message, void *userdata, sd
                 return r;
 
         r = unit_file_get_default(m->unit_file_scope, NULL, &default_target);
+        if (r == -ERFKILL)
+                sd_bus_error_setf(error, BUS_ERROR_UNIT_MASKED, "Unit file is masked.");
         if (r < 0)
                 return r;
 
@@ -2277,6 +2337,8 @@ static int reply_install_changes_and_free(
         bool bad = false, good = false;
         int r;
 
+        CLEANUP_ARRAY(changes, n_changes, install_changes_free);
+
         if (install_changes_have_modification(changes, n_changes)) {
                 r = bus_foreach_bus(m, NULL, send_unit_files_changed, NULL);
                 if (r < 0)
@@ -2285,17 +2347,17 @@ static int reply_install_changes_and_free(
 
         r = sd_bus_message_new_method_return(message, &reply);
         if (r < 0)
-                goto fail;
+                return r;
 
         if (carries_install_info >= 0) {
                 r = sd_bus_message_append(reply, "b", carries_install_info);
                 if (r < 0)
-                        goto fail;
+                        return r;
         }
 
         r = sd_bus_message_open_container(reply, 'a', "(sss)");
         if (r < 0)
-                goto fail;
+                return r;
 
         for (size_t i = 0; i < n_changes; i++) {
 
@@ -2310,7 +2372,7 @@ static int reply_install_changes_and_free(
                                 changes[i].path,
                                 changes[i].source);
                 if (r < 0)
-                        goto fail;
+                        return r;
 
                 good = true;
         }
@@ -2318,18 +2380,13 @@ static int reply_install_changes_and_free(
         /* If there was a failed change, and no successful change, then return the first failure as proper
          * method call error. */
         if (bad && !good)
-                return install_error(error, 0, changes, n_changes);
+                return install_error(error, 0, TAKE_PTR(changes), n_changes);
 
         r = sd_bus_message_close_container(reply);
         if (r < 0)
-                goto fail;
+                return r;
 
-        install_changes_free(changes, n_changes);
         return sd_bus_send(NULL, reply, NULL);
-
-fail:
-        install_changes_free(changes, n_changes);
-        return r;
 }
 
 static int method_enable_unit_files_generic(
@@ -2886,6 +2943,8 @@ const sd_bus_vtable bus_manager_vtable[] = {
         SD_BUS_PROPERTY("DefaultLimitRTTIME", "t", bus_property_get_rlimit, offsetof(Manager, rlimit[RLIMIT_RTTIME]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("DefaultLimitRTTIMESoft", "t", bus_property_get_rlimit, offsetof(Manager, rlimit[RLIMIT_RTTIME]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("DefaultTasksMax", "t", bus_property_get_tasks_max, offsetof(Manager, default_tasks_max), 0),
+        SD_BUS_PROPERTY("DefaultMemoryPressureThresholdUSec", "t", bus_property_get_usec, offsetof(Manager, default_memory_pressure_threshold_usec), 0),
+        SD_BUS_PROPERTY("DefaultMemoryPressureWatch", "s", bus_property_get_cgroup_pressure_watch, offsetof(Manager, default_memory_pressure_watch), 0),
         SD_BUS_PROPERTY("TimerSlackNSec", "t", property_get_timer_slack_nsec, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("DefaultOOMPolicy", "s", bus_property_get_oom_policy, offsetof(Manager, default_oom_policy), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("DefaultOOMScoreAdjust", "i", property_get_oom_score_adjust, 0, SD_BUS_VTABLE_PROPERTY_CONST),
@@ -2910,6 +2969,11 @@ const sd_bus_vtable bus_manager_vtable[] = {
                                 SD_BUS_ARGS("s", cgroup),
                                 SD_BUS_RESULT("o", unit),
                                 method_get_unit_by_control_group,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("GetUnitByPIDFD",
+                                SD_BUS_ARGS("h", pidfd),
+                                SD_BUS_RESULT("o", unit, "s", unit_id, "ay", invocation_id),
+                                method_get_unit_by_pidfd,
                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("LoadUnit",
                                 SD_BUS_ARGS("s", name),
@@ -2968,6 +3032,11 @@ const sd_bus_vtable bus_manager_vtable[] = {
                                 SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD_WITH_ARGS("KillUnit",
                                 SD_BUS_ARGS("s", name, "s", whom, "i", signal),
+                                SD_BUS_NO_RESULT,
+                                method_kill_unit,
+                                SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD_WITH_ARGS("QueueSignalUnit",
+                                SD_BUS_ARGS("s", name, "s", whom, "i", signal, "i", value),
                                 SD_BUS_NO_RESULT,
                                 method_kill_unit,
                                 SD_BUS_VTABLE_UNPRIVILEGED),

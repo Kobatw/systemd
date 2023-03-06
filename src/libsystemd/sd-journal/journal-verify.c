@@ -1297,7 +1297,8 @@ int journal_file_verify(
         }
 
         if (entry_monotonic_set &&
-            (sd_id128_equal(entry_boot_id, f->header->boot_id) &&
+            (sd_id128_equal(entry_boot_id, f->header->tail_entry_boot_id) &&
+             JOURNAL_HEADER_TAIL_ENTRY_BOOT_ID(f->header) &&
              entry_monotonic != le64toh(f->header->tail_entry_monotonic))) {
                 error(0,
                       "Invalid tail monotonic timestamp (%"PRIu64" != %"PRIu64")",
@@ -1377,11 +1378,11 @@ fail:
         if (show_progress)
                 flush_progress();
 
-        log_error("File corruption detected at %s:"OFSfmt" (of %llu bytes, %"PRIu64"%%).",
+        log_error("File corruption detected at %s:%"PRIu64" (of %"PRIu64" bytes, %"PRIu64"%%).",
                   f->path,
                   p,
-                  (unsigned long long) f->last_stat.st_size,
-                  100 * p / f->last_stat.st_size);
+                  (uint64_t) f->last_stat.st_size,
+                  100U * p / (uint64_t) f->last_stat.st_size);
 
         if (cache_data_fd)
                 mmap_cache_fd_free(cache_data_fd);

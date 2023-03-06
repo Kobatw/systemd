@@ -1494,7 +1494,7 @@ static int fork_needed(const SocketAddress *address, const ExecContext *context)
                         return true;
         }
 
-        return context->private_network || context->network_namespace_path;
+        return exec_needs_network_namespace(context);
 }
 
 static int socket_address_listen_in_cgroup(
@@ -1557,7 +1557,7 @@ static int socket_address_listen_in_cgroup(
 
                 pair[0] = safe_close(pair[0]);
 
-                if ((s->exec_context.private_network || s->exec_context.network_namespace_path) &&
+                if (exec_needs_network_namespace(&s->exec_context) &&
                     s->exec_runtime &&
                     s->exec_runtime->netns_storage_socket[0] >= 0) {
 
@@ -1948,6 +1948,7 @@ static int socket_spawn(Socket *s, ExecCommand *c, pid_t *_pid) {
                        &exec_params,
                        s->exec_runtime,
                        &s->dynamic_creds,
+                       &s->cgroup_context,
                        &pid);
         if (r < 0)
                 return r;
@@ -3299,8 +3300,8 @@ static void socket_trigger_notify(Unit *u, Unit *other) {
                 socket_set_state(s, SOCKET_RUNNING);
 }
 
-static int socket_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
-        return unit_kill_common(u, who, signo, -1, SOCKET(u)->control_pid, error);
+static int socket_kill(Unit *u, KillWho who, int signo, int code, int value, sd_bus_error *error) {
+        return unit_kill_common(u, who, signo, code, value, -1, SOCKET(u)->control_pid, error);
 }
 
 static int socket_get_timeout(Unit *u, usec_t *timeout) {

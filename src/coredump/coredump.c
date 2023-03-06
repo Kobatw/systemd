@@ -277,7 +277,7 @@ static int fix_permissions(
         if (r < 0)
                 return log_error_errno(r, "Failed to sync coredump %s: %m", coredump_tmpfile_name(filename));
 
-        r = link_tmpfile(fd, filename, target);
+        r = link_tmpfile(fd, filename, target, /* replace= */ false);
         if (r < 0)
                 return log_error_errno(r, "Failed to move coredump %s into place: %m", target);
 
@@ -597,7 +597,7 @@ static int save_external_coredump(
                 /* tmpfs might get full quickly, so check the available space too.
                  * But don't worry about errors here, failing to access the storage
                  * location will be better logged when writing to it. */
-                if (statvfs("/var/lib/systemd/coredump/", &sv) >= 0)
+                if (fstatvfs(fd, &sv) >= 0)
                         max_size = MIN((uint64_t)sv.f_frsize * (uint64_t)sv.f_bfree, max_size);
 
                 log_debug("Limiting core file size to %" PRIu64 " bytes due to cgroup memory limits.", max_size);
@@ -1486,11 +1486,9 @@ static int process_kernel(int argc, char* argv[]) {
         if (r < 0)
                 goto finish;
 
-        if (!context.is_journald) {
+        if (!context.is_journald)
                 /* OK, now we know it's not the journal, hence we can make use of it now. */
-                log_set_target(LOG_TARGET_JOURNAL_OR_KMSG);
-                log_open();
-        }
+                log_set_target_and_open(LOG_TARGET_JOURNAL_OR_KMSG);
 
         /* If this is PID 1 disable coredump collection, we'll unlikely be able to process
          * it later on.
@@ -1589,8 +1587,7 @@ static int run(int argc, char *argv[]) {
         /* First, log to a safe place, since we don't know what crashed and it might
          * be journald which we'd rather not log to then. */
 
-        log_set_target(LOG_TARGET_KMSG);
-        log_open();
+        log_set_target_and_open(LOG_TARGET_KMSG);
 
         /* Make sure we never enter a loop */
         (void) prctl(PR_SET_DUMPABLE, 0);

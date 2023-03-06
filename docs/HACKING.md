@@ -35,16 +35,17 @@ possible, however. In order to simplify testing for cases like this we provide
 a set of `mkosi` build files directly in the source tree.
 [mkosi](https://github.com/systemd/mkosi) is a tool for building clean OS images
 from an upstream distribution in combination with a fresh build of the project
-in the local working directory. To make use of this, please install the
-`mkosi` package (if not packaged for your distro, it can be downloaded from
+in the local working directory. To make use of this, please install `mkosi` from
 the [GitHub repository](https://github.com/systemd/mkosi). `mkosi` will build an
-image for the host distro by default. mkosi-13 or newer version is required.
-It is sufficient to type `mkosi` in the systemd project directory to generate
-a disk image `image.raw` you can boot either in `systemd-nspawn` or
-in an UEFI-capable VM:
+image for the host distro by default. Currently, the latest github commit is
+required. `mkosi` also requires systemd v253 (unreleased) or newer. If systemd v253
+is not available, `mkosi` will automatically use executables from the systemd build
+directory if it's executed from the systemd repository root directory. It is
+sufficient to type `mkosi` in the systemd project directory to generate a disk image
+you can boot either in `systemd-nspawn` or in a UEFI-capable VM:
 
 ```sh
-$ mkosi boot
+$ sudo mkosi boot # nspawn still needs sudo for now
 ```
 
 or:
@@ -60,16 +61,6 @@ of cache images that make future builds a lot faster. Note that the `-i` flag
 both instructs mkosi to build cached images if they don't exist yet and to use
 cached images if they already exist so make sure to always specify `-i` if you
 want mkosi to use the cached images.
-
-If you're going to build mkosi images that use the same distribution and release
-that you're currently using, you can speed up the initial mkosi run by having it
-reuse the host's package cache. To do this, create a mkosi override file in
-mkosi.default.d/ (e.g 20-local.conf) and add the following contents:
-
-```
-[Content]
-Cache=<full-path-to-package-manager-cache> # (e.g. /var/cache/dnf)
-```
 
 If you want to do a local build without mkosi, most distributions also provide
 very simple and convenient ways to install all development packages necessary
@@ -92,8 +83,7 @@ for systemd:
 
 ```sh
 # Install build dependencies (see above)
-# Install a recent version of mkosi (either via your distro's package manager if
-# available there or from the github repository otherwise)
+# Install mkosi from the github repository
 $ git clone https://github.com/systemd/systemd.git
 $ cd systemd
 $ git checkout -b <BRANCH>        # where BRANCH is the name of the branch
@@ -101,8 +91,12 @@ $ vim src/core/main.c             # or wherever you'd like to make your changes
 $ meson build                     # configure the build
 $ ninja -C build                  # build it locally, see if everything compiles fine
 $ meson test -C build             # run some simple regression tests
-$ sudo mkosi                      # mkosi-13 or newer required to build a test image
-$ sudo mkosi boot                 # boot up the test image
+$ cd ..
+$ git clone https://github.com/systemd/mkosi.git
+$ ln -s mkosi/bin/mkosi ~/.local/bin/mkosi # Make sure ~/.local/bin is in $PATH
+$ cd systemd
+$ mkosi                           # build the test image
+$ mkosi qemu                      # boot up the test image in qemu
 $ git add -p                      # interactively put together your patch
 $ git commit                      # commit it
 $ git push -u <REMOTE>            # where REMOTE is your "fork" on GitHub
@@ -193,83 +187,6 @@ For more details on building fuzzers and integrating with OSS-Fuzz, visit:
 
 - [Setting up a new project - OSS-Fuzz](https://google.github.io/oss-fuzz/getting-started/new-project-guide/)
 - [Tutorials - OSS-Fuzz](https://google.github.io/oss-fuzz/reference/useful-links/#tutorials)
-
-## mkosi + clangd
-
-[clangd](https://clangd.llvm.org/) is a language server that provides code completion, diagnostics and more
-right in your editor of choice (with the right plugin installed). When using mkosi, we can run clangd in the
-mkosi build container to avoid needing to build systemd on the host machine just to make clangd work. To
-achieve this, create a script with the following contents in systemd's project directory on the host:
-
-```sh
-#!/usr/bin/env sh
-tee mkosi-clangd.build > /dev/null << EOF
-#!/usr/bin/env sh
-exec clangd \\
-        --compile-commands-dir=/root/build \\
-        --path-mappings=\\
-"\\
-$(pwd)=/root/src,\\
-$(pwd)/mkosi.builddir=/root/build,\\
-$(pwd)/mkosi.includedir=/usr/include,\\
-$(pwd)/mkosi.installdir=/root/dest\\
-" \\
-        --header-insertion=never
-EOF
-chmod +x mkosi-clangd.build
-exec pkexec mkosi --source-file-transfer=mount --incremental --skip-final-phase --build-script mkosi-clangd.build build
-```
-
-Next, mark the script as executable and point your editor plugin to use this script to start clangd. For
-vscode's clangd extension, this is done via setting the `clangd.path` option to the path of the
-mkosi-clangd.sh script.
-
-To be able to navigate to include files of systemd's dependencies, we need to make the /usr/include folder of
-the build image available on the host. mkosi supports this by setting the `IncludeDirectory` option in
-mkosi's config. The easiest way to set the option is to create a file 20-local.conf in mkosi.default.d/ and
-add the following contents:
-
-```
-[Content]
-IncludeDirectory=mkosi.includedir
-```
-
-This will make the contents of /usr/include available in mkosi.includedir in the systemd project directory.
-We already configured clangd to map any paths in /usr/include in the build image to mkosi.includedir/ on the
-host in the mkosi-clangd.sh script.
-
-We also need to make sure clangd is installed in the build image. To have mkosi install clangd in the build
-image, edit the 20-local.conf file we created earlier and add the following contents under the `[Content]`
-section:
-
-```
-BuildPackages=<clangd-package>
-```
-
-Note that the exact package containing clangd will differ depending on the distribution used. Some
-distributions have a separate clangd package, others put the clangd binary in a clang-tools-extra package and
-some bundle clangd in the clang package.
-
-Because mkosi needs to run as root, we also need to make sure we can enter the root password when the editor
-plugin tries to run the mkosi-clangd.sh script. To be able to enter the root password in non-interactive
-scripts, we use pkexec instead of sudo. pkexec will launch a graphical interface to let the user enter their
-password, so that the password can be entered by the user even when pkexec is executed from a non-interactive
-shell.
-
-Due to a bug in btrfs, it's currently impossible to mount two mkosi btrfs images at the same time. Because of
-this, trying to do a regular build while the clangd image is running will fail. To circumvent this, use ext4
-instead of btrfs for the images by adding the following contents to 20-local.conf:
-
-```
-[Output]
-Format=gpt_ext4
-```
-
-Finally, to ensure clangd starts up quickly in the editor, run an incremental build with mkosi to make sure
-the cached images are initialized (`mkosi -i`).
-
-Now, your editor will start clangd in the mkosi build image and all of clangd's features will work as
-expected.
 
 ## Debugging binaries that need to run as root in vscode
 

@@ -596,6 +596,8 @@ int get_process_umask(pid_t pid, mode_t *ret) {
         r = get_proc_field(p, "Umask", WHITESPACE, &m);
         if (r == -ENOENT)
                 return -ESRCH;
+        if (r < 0)
+                return r;
 
         return parse_mode(m, ret);
 }
@@ -1132,6 +1134,7 @@ static void restore_sigsetp(sigset_t **ssp) {
 
 int safe_fork_full(
                 const char *name,
+                const int stdio_fds[3],
                 const int except_fds[],
                 size_t n_except_fds,
                 ForkFlags flags,
@@ -1183,7 +1186,7 @@ int safe_fork_full(
         else
                 pid = fork();
         if (pid < 0)
-                return log_full_errno(prio, errno, "Failed to fork: %m");
+                return log_full_errno(prio, errno, "Failed to fork off '%s': %m", strna(name));
         if (pid > 0) {
                 /* We are in the parent process */
 
@@ -1290,6 +1293,27 @@ int safe_fork_full(
                 }
         }
 
+        if (flags & FORK_REARRANGE_STDIO) {
+                if (stdio_fds) {
+                        r = rearrange_stdio(stdio_fds[0], stdio_fds[1], stdio_fds[2]);
+                        if (r < 0) {
+                                log_full_errno(prio, r, "Failed to rearrange stdio fds: %m");
+                                _exit(EXIT_FAILURE);
+                        }
+                } else {
+                        r = make_null_stdio();
+                        if (r < 0) {
+                                log_full_errno(prio, r, "Failed to connect stdin/stdout to /dev/null: %m");
+                                _exit(EXIT_FAILURE);
+                        }
+                }
+        } else if (flags & FORK_STDOUT_TO_STDERR) {
+                if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
+                        log_full_errno(prio, errno, "Failed to connect stdout to stderr: %m");
+                        _exit(EXIT_FAILURE);
+                }
+        }
+
         if (flags & FORK_CLOSE_ALL_FDS) {
                 /* Close the logs here in case it got reopened above, as close_all_fds() would close them for us */
                 log_close();
@@ -1313,20 +1337,6 @@ int safe_fork_full(
         if (flags & FORK_REOPEN_LOG) {
                 log_open();
                 log_set_open_when_needed(false);
-        }
-
-        if (flags & FORK_NULL_STDIO) {
-                r = make_null_stdio();
-                if (r < 0) {
-                        log_full_errno(prio, r, "Failed to connect stdin/stdout to /dev/null: %m");
-                        _exit(EXIT_FAILURE);
-                }
-
-        } else if (flags & FORK_STDOUT_TO_STDERR) {
-                if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
-                        log_full_errno(prio, errno, "Failed to connect stdout to stderr: %m");
-                        _exit(EXIT_FAILURE);
-                }
         }
 
         if (flags & FORK_RLIMIT_NOFILE_SAFE) {
@@ -1362,7 +1372,10 @@ int namespace_fork(
          * process. This ensures that we are fully a member of the destination namespace, with pidns an all, so that
          * /proc/self/fd works correctly. */
 
-        r = safe_fork_full(outer_name, except_fds, n_except_fds, (flags|FORK_DEATHSIG) & ~(FORK_REOPEN_LOG|FORK_NEW_MOUNTNS|FORK_MOUNTNS_SLAVE), ret_pid);
+        r = safe_fork_full(outer_name,
+                           NULL,
+                           except_fds, n_except_fds,
+                           (flags|FORK_DEATHSIG) & ~(FORK_REOPEN_LOG|FORK_NEW_MOUNTNS|FORK_MOUNTNS_SLAVE), ret_pid);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -1377,7 +1390,10 @@ int namespace_fork(
                 }
 
                 /* We mask a few flags here that either make no sense for the grandchild, or that we don't have to do again */
-                r = safe_fork_full(inner_name, except_fds, n_except_fds, flags & ~(FORK_WAIT|FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_NULL_STDIO), &pid);
+                r = safe_fork_full(inner_name,
+                                   NULL,
+                                   except_fds, n_except_fds,
+                                   flags & ~(FORK_WAIT|FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_REARRANGE_STDIO), &pid);
                 if (r < 0)
                         _exit(EXIT_FAILURE);
                 if (r == 0) {
@@ -1456,6 +1472,20 @@ int pidfd_get_pid(int fd, pid_t *ret) {
         return parse_pid(p, ret);
 }
 
+int pidfd_verify_pid(int pidfd, pid_t pid) {
+        pid_t current_pid;
+        int r;
+
+        assert(pidfd >= 0);
+        assert(pid > 0);
+
+        r = pidfd_get_pid(pidfd, &current_pid);
+        if (r < 0)
+                return r;
+
+        return current_pid != pid ? -ESRCH : 0;
+}
+
 static int rlimit_to_nice(rlim_t limit) {
         if (limit <= 1)
                 return PRIO_MAX-1; /* i.e. 19 */
@@ -1531,6 +1561,31 @@ _noreturn_ void freeze(void) {
         /* waitid() failed with an unexpected error, things are really borked. Freeze now! */
         for (;;)
                 pause();
+}
+
+int get_process_threads(pid_t pid) {
+        _cleanup_free_ char *t = NULL;
+        const char *p;
+        int n, r;
+
+        if (pid < 0)
+                return -EINVAL;
+
+        p = procfs_file_alloca(pid, "status");
+
+        r = get_proc_field(p, "Threads", WHITESPACE, &t);
+        if (r == -ENOENT)
+                return proc_mounted() == 0 ? -ENOSYS : -ESRCH;
+        if (r < 0)
+                return r;
+
+        r = safe_atoi(t, &n);
+        if (r < 0)
+                return r;
+        if (n < 0)
+                return -EINVAL;
+
+        return n;
 }
 
 static const char *const sigchld_code_table[] = {

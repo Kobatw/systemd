@@ -19,7 +19,7 @@ elif efi_arch == 'x86_64' and '-m32' in get_option('efi-cflags')
         efi_arch = 'x86'
 endif
 efi_arch = {
-        # host_cc_arch: [efi_arch (see Table 3-2 in UEFI spec), gnu_efi_inc_arch]
+        # host_cc_arch: [efi_arch (see Table 3-2 in UEFI spec), obsolete gnu_efi_inc_arch]
         'x86':     ['ia32', 'ia32'],
         'x86_64':  ['x64', 'x86_64'],
         'arm':     ['arm', 'arm'],
@@ -28,14 +28,17 @@ efi_arch = {
 }.get(efi_arch, [])
 
 efi_incdir = get_option('efi-includedir')
-if efi_arch.length() > 0 and not cc.has_header(
-                '@0@/@1@/efibind.h'.format(efi_incdir, efi_arch[1]),
-                args: get_option('efi-cflags'))
+found = false
+foreach efi_arch_candidate : efi_arch
+        efi_archdir = efi_incdir / efi_arch_candidate
+        if cc.has_header(efi_archdir / 'efibind.h',
+                         args: get_option('efi-cflags'))
+                found = true
+                break
+        endif
+endforeach
 
-        efi_arch = []
-endif
-
-if efi_arch.length() == 0
+if not found
         if get_option('gnu-efi') == 'true'
                 error('gnu-efi support requested, but headers not found or efi arch is unknown')
         endif
@@ -45,7 +48,8 @@ endif
 
 if not cc.has_header_symbol('efi.h', 'EFI_IMAGE_MACHINE_X64',
                 args: ['-nostdlib', '-ffreestanding', '-fshort-wchar'] + get_option('efi-cflags'),
-                include_directories: include_directories(efi_incdir, efi_incdir / efi_arch[1]))
+                include_directories: include_directories(efi_incdir,
+                                                         efi_archdir))
 
         if get_option('gnu-efi') == 'true'
                 error('gnu-efi support requested, but found headers are too old (3.0.5+ required)')
@@ -55,6 +59,7 @@ if not cc.has_header_symbol('efi.h', 'EFI_IMAGE_MACHINE_X64',
 endif
 
 objcopy = run_command(cc.cmd_array(), '-print-prog-name=objcopy', check: true).stdout().strip()
+objcopy_2_38 = find_program('objcopy', version: '>=2.38', required: false)
 
 efi_ld = get_option('efi-ld')
 if efi_ld == 'auto'
@@ -183,8 +188,6 @@ efi_cflags = [
         '-I', meson.current_source_dir(),
         '-include', efi_config_h,
         '-include', version_h,
-        '-isystem', efi_incdir / efi_arch[1],
-        '-isystem', efi_incdir,
         '-std=gnu11',
         '-Wall',
         '-Wextra',
@@ -256,6 +259,7 @@ efi_ldflags = [
         '-Wl,--warn-common',
         '-Wl,-Bsymbolic',
         '-z', 'nocombreloc',
+        '-z', 'noexecstack',
         efi_crt0,
 ]
 
@@ -273,9 +277,17 @@ foreach arg : ['-Wl,--no-warn-execstack',
         endif
 endforeach
 
-if efi_arch[1] in ['aarch64', 'arm', 'riscv64']
+# If using objcopy, crt0 must not include the PE/COFF header
+if run_command('grep', '-q', 'coff_header', efi_crt0, check: false).returncode() == 0
+        coff_header_in_crt0 = true
+else
+        coff_header_in_crt0 = false
+endif
+
+if efi_arch[1] in ['arm', 'riscv64'] or (efi_arch[1] == 'aarch64' and (not objcopy_2_38.found() or coff_header_in_crt0))
         efi_ldflags += ['-shared']
-        # Aarch64, ARM32 and 64bit RISC-V don't have an EFI capable objcopy.
+        # ARM32 and 64bit RISC-V don't have an EFI capable objcopy.
+        # Older objcopy doesn't support Aarch64 either.
         # Use 'binary' instead, and add required symbols manually.
         efi_ldflags += ['-Wl,--defsym=EFI_SUBSYSTEM=0xa']
         efi_format = ['-O', 'binary']
@@ -295,23 +307,6 @@ if efi_arch[1] == 'arm'
         efi_ldflags += ['-Wl,--no-wchar-size-warning']
 endif
 
-if run_command('grep', '-q', '__CTOR_LIST__', efi_lds, check: false).returncode() == 0
-        # fedora has a patched gnu-efi that adds support for ELF constructors.
-        # If ld is called by gcc something about these symbols breaks, resulting
-        # in sd-boot freezing when gnu-efi runs the constructors. Force defining
-        # them seems to work around this.
-        efi_ldflags += [
-                '-Wl,--defsym=_init_array=0',
-                '-Wl,--defsym=_init_array_end=0',
-                '-Wl,--defsym=_fini_array=0',
-                '-Wl,--defsym=_fini_array_end=0',
-                '-Wl,--defsym=__CTOR_LIST__=0',
-                '-Wl,--defsym=__CTOR_END__=0',
-                '-Wl,--defsym=__DTOR_LIST__=0',
-                '-Wl,--defsym=__DTOR_END__=0',
-        ]
-endif
-
 if cc.get_id() == 'clang' and cc.version().split('.')[0].to_int() <= 10
         # clang <= 10 doesn't pass -T to the linker and then even complains about it being unused
         efi_ldflags += ['-Wl,-T,' + efi_lds, '-Wno-unused-command-line-argument']
@@ -322,7 +317,7 @@ summary({
         'EFI LD' :                          efi_ld,
         'EFI lds' :                         efi_lds,
         'EFI crt0' :                        efi_crt0,
-        'EFI include directory' :           efi_incdir},
+        'EFI include directory' :           efi_archdir},
         section : 'Extensible Firmware Interface')
 
 if efi_conf.get('SBAT_DISTRO', '') != ''
@@ -341,17 +336,31 @@ efi_headers = files(
         'bcd.h',
         'console.h',
         'cpio.h',
+        'device-path-util.h',
         'devicetree.h',
-        'disk.h',
         'drivers.h',
         'efi-string.h',
+        'efi.h',
         'graphics.h',
         'initrd.h',
         'linux.h',
+        'log.h',
         'measure.h',
-        'missing_efi.h',
         'part-discovery.h',
         'pe.h',
+        'proto/block-io.h',
+        'proto/console-control.h',
+        'proto/device-path.h',
+        'proto/dt-fixup.h',
+        'proto/file-io.h',
+        'proto/graphics-output.h',
+        'proto/load-file.h',
+        'proto/loaded-image.h',
+        'proto/rng.h',
+        'proto/security-arch.h',
+        'proto/shell-parameters.h',
+        'proto/simple-text-io.h',
+        'proto/tcg.h',
         'random-seed.h',
         'secure-boot.h',
         'shim.h',
@@ -361,14 +370,14 @@ efi_headers = files(
 )
 
 common_sources = files(
-        'assert.c',
         'console.c',
+        'device-path-util.c',
         'devicetree.c',
         'drivers.c',
-        'disk.c',
         'efi-string.c',
         'graphics.c',
         'initrd.c',
+        'log.c',
         'measure.c',
         'part-discovery.c',
         'pe.c',
@@ -396,22 +405,47 @@ if efi_arch[1] in ['ia32', 'x86_64']
 endif
 
 tests += [
-        [files('test-efi-string.c', 'efi-string.c')],
+        {
+                'sources' : files(
+                        'test-efi-string.c',
+                        'efi-string.c',
+                )
+        },
 ]
 
 # BCD parser only makes sense on arches that Windows supports.
 if efi_arch[1] in ['ia32', 'x86_64', 'arm', 'aarch64']
         systemd_boot_sources += files('bcd.c')
         tests += [
-                [files('test-bcd.c', 'efi-string.c'),
-                 [],
-                 [libzstd],
-                 [],
-                 'HAVE_ZSTD'],
+                {
+                        'sources' : files(
+                                'test-bcd.c',
+                                'efi-string.c',
+                        ),
+                        'dependencies' : libzstd,
+                        'condition' : 'HAVE_ZSTD',
+                },
         ]
         fuzzers += [
-                [files('fuzz-bcd.c', 'bcd.c', 'efi-string.c')],
-                [files('fuzz-efi-string.c', 'efi-string.c')],
+                {
+                        'sources' : files(
+                                'fuzz-bcd.c',
+                                'bcd.c',
+                                'efi-string.c'
+                        ),
+                },
+                {
+                        'sources' : files(
+                                'fuzz-efi-string.c',
+                                'efi-string.c'
+                        ),
+                },
+                {
+                        'sources' : files(
+                                'fuzz-efi-printf.c',
+                                'efi-string.c'
+                        ),
+                },
         ]
 endif
 
@@ -443,7 +477,6 @@ foreach tuple : [['systemd-boot@0@.@1@', systemd_boot_objects, false, 'systemd-b
                            efi_cflags,
                            efi_ldflags,
                            '@INPUT@',
-                           '-lefi',
                            '-lgnuefi',
                            '-lgcc'],
                 install : tuple[2],
@@ -465,6 +498,7 @@ foreach tuple : [['systemd-boot@0@.@1@', systemd_boot_objects, false, 'systemd-b
                            '-j', '.sdata',
                            '-j', '.sdmagic',
                            '-j', '.text',
+                           '--strip-all',
                            '--section-alignment=512',
                            efi_format,
                            '@INPUT@', '@OUTPUT@'],

@@ -97,7 +97,7 @@ static bool press_any_key(void) {
 }
 
 static void print_welcome(void) {
-        _cleanup_free_ char *pretty_name = NULL, *ansi_color = NULL;
+        _cleanup_free_ char *pretty_name = NULL, *os_name = NULL, *ansi_color = NULL;
         static bool done = false;
         const char *pn, *ac;
         int r;
@@ -111,12 +111,13 @@ static void print_welcome(void) {
         r = parse_os_release(
                         arg_root,
                         "PRETTY_NAME", &pretty_name,
+                        "NAME", &os_name,
                         "ANSI_COLOR", &ansi_color);
         if (r < 0)
                 log_full_errno(r == -ENOENT ? LOG_DEBUG : LOG_WARNING, r,
                                "Failed to read os-release file, ignoring: %m");
 
-        pn = isempty(pretty_name) ? "Linux" : pretty_name;
+        pn = os_release_pretty_name(pretty_name, os_name);
         ac = isempty(ansi_color) ? "0" : ansi_color;
 
         if (colors_enabled())
@@ -903,8 +904,6 @@ static int process_root_account(void) {
                 return 0;
         }
 
-        (void) mkdir_parents(etc_passwd, 0755);
-
         lock = take_etc_passwd_lock(arg_root);
         if (lock < 0)
                 return log_error_errno(lock, "Failed to take a lock on %s: %m", etc_passwd);
@@ -1390,6 +1389,7 @@ static int run(int argc, char *argv[]) {
                                 DISSECT_IMAGE_FSCK |
                                 DISSECT_IMAGE_GROWFS,
                                 &unlink_dir,
+                                /* ret_dir_fd= */ NULL,
                                 &loop_device);
                 if (r < 0)
                         return r;

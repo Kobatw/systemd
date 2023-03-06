@@ -1180,8 +1180,9 @@ static int home_start_work(Home *h, const char *verb, UserRecord *hr, UserRecord
                 return -errno;
 
         r = safe_fork_full("(sd-homework)",
-                           (int[]) { stdin_fd, stdout_fd }, 2,
-                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG|FORK_LOG|FORK_REOPEN_LOG, &pid);
+                           (int[]) { stdin_fd, stdout_fd, STDERR_FILENO },
+                           NULL, 0,
+                           FORK_RESET_SIGNALS|FORK_CLOSE_ALL_FDS|FORK_DEATHSIG|FORK_REARRANGE_STDIO|FORK_LOG|FORK_REOPEN_LOG, &pid);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -1225,13 +1226,6 @@ static int home_start_work(Home *h, const char *verb, UserRecord *hr, UserRecord
                 r = setenv_systemd_exec_pid(true);
                 if (r < 0)
                         log_warning_errno(r, "Failed to update $SYSTEMD_EXEC_PID, ignoring: %m");
-
-                r = rearrange_stdio(TAKE_FD(stdin_fd), TAKE_FD(stdout_fd), STDERR_FILENO); /* fds are invalidated by rearrange_stdio() even on failure */
-                if (r < 0) {
-                        log_error_errno(r, "Failed to rearrange stdin/stdout/stderr: %m");
-                        _exit(EXIT_FAILURE);
-                }
-
 
                 /* Allow overriding the homework path via an environment variable, to make debugging
                  * easier. */
@@ -2242,7 +2236,7 @@ static int home_get_disk_status_luks(
          * that case the image is pre-allocated and thus appears all used from the host PoV but is not used
          * up at all yet from the user's PoV.
          *
-         * That said, we use use the stat() reported loopback file size as upper boundary: our footprint can
+         * That said, we use the stat() reported loopback file size as upper boundary: our footprint can
          * never be larger than what we take up on the lowest layers. */
 
         if (disk_size != UINT64_MAX && disk_size > disk_free) {

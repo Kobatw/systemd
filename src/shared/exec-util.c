@@ -20,7 +20,6 @@
 #include "missing_syscall.h"
 #include "path-util.h"
 #include "process-util.h"
-#include "rlimit-util.h"
 #include "serialize.h"
 #include "set.h"
 #include "signal-util.h"
@@ -43,7 +42,7 @@ static int do_spawn(const char *path, char *argv[], int stdout_fd, pid_t *pid, b
                 return 0;
         }
 
-        r = safe_fork("(direxec)", FORK_DEATHSIG|FORK_LOG, &_pid);
+        r = safe_fork("(direxec)", FORK_DEATHSIG|FORK_LOG|FORK_RLIMIT_NOFILE_SAFE, &_pid);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -54,8 +53,6 @@ static int do_spawn(const char *path, char *argv[], int stdout_fd, pid_t *pid, b
                         if (r < 0)
                                 _exit(EXIT_FAILURE);
                 }
-
-                (void) rlimit_nofile_safe();
 
                 if (set_systemd_exec_pid) {
                         r = setenv_systemd_exec_pid(false);
@@ -154,18 +151,16 @@ static int do_execute(
                         t = NULL;
                 } else {
                         r = wait_for_terminate_and_check(t, pid, WAIT_LOG);
-                        if (FLAGS_SET(flags, EXEC_DIR_IGNORE_ERRORS)) {
-                                if (r < 0)
-                                        continue;
-                        } else if (r > 0)
+                        if (r < 0)
+                                return r;
+                        if (!FLAGS_SET(flags, EXEC_DIR_IGNORE_ERRORS) && r > 0)
                                 return r;
 
                         if (callbacks) {
                                 if (lseek(fd, 0, SEEK_SET) < 0)
                                         return log_error_errno(errno, "Failed to seek on serialization fd: %m");
 
-                                r = callbacks[STDOUT_GENERATE](fd, callback_args[STDOUT_GENERATE]);
-                                fd = -EBADF;
+                                r = callbacks[STDOUT_GENERATE](TAKE_FD(fd), callback_args[STDOUT_GENERATE]);
                                 if (r < 0)
                                         return log_error_errno(r, "Failed to process output from %s: %m", *path);
                         }
@@ -189,6 +184,8 @@ static int do_execute(
                 assert(t);
 
                 r = wait_for_terminate_and_check(t, pid, WAIT_LOG);
+                if (r < 0)
+                        return r;
                 if (!FLAGS_SET(flags, EXEC_DIR_IGNORE_ERRORS) && r > 0)
                         return r;
         }
@@ -252,8 +249,7 @@ int execute_directories(
         if (lseek(fd, 0, SEEK_SET) < 0)
                 return log_error_errno(errno, "Failed to rewind serialization fd: %m");
 
-        r = callbacks[STDOUT_CONSUME](fd, callback_args[STDOUT_CONSUME]);
-        fd = -EBADF;
+        r = callbacks[STDOUT_CONSUME](TAKE_FD(fd), callback_args[STDOUT_CONSUME]);
         if (r < 0)
                 return log_error_errno(r, "Failed to parse returned data: %m");
         return 0;
@@ -491,9 +487,10 @@ int fork_agent(const char *name, const int except[], size_t n_except, pid_t *ret
         /* Spawns a temporary TTY agent, making sure it goes away when we go away */
 
         r = safe_fork_full(name,
+                           NULL,
                            except,
                            n_except,
-                           FORK_RESET_SIGNALS|FORK_DEATHSIG|FORK_CLOSE_ALL_FDS|FORK_REOPEN_LOG,
+                           FORK_RESET_SIGNALS|FORK_DEATHSIG|FORK_CLOSE_ALL_FDS|FORK_REOPEN_LOG|FORK_RLIMIT_NOFILE_SAFE,
                            ret_pid);
         if (r < 0)
                 return r;
@@ -536,8 +533,6 @@ int fork_agent(const char *name, const int except[], size_t n_except, pid_t *ret
                         fd = safe_close_above_stdio(fd);
                 }
         }
-
-        (void) rlimit_nofile_safe();
 
         /* Count arguments */
         va_start(ap, path);

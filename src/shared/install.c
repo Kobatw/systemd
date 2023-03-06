@@ -284,6 +284,9 @@ InstallChangeType install_changes_add(
         assert(!changes == !n_changes);
         assert(INSTALL_CHANGE_TYPE_VALID(type));
 
+        /* Message formatting requires <path> to be set. */
+        assert(path);
+
         /* Register a change or error. Note that the return value may be the error
          * that was passed in, or -ENOMEM generated internally. */
 
@@ -339,7 +342,9 @@ void install_changes_dump(int r, const char *verb, const InstallChange *changes,
         assert(verb || r >= 0);
 
         for (size_t i = 0; i < n_changes; i++) {
-                assert(verb || changes[i].type >= 0);
+                if (changes[i].type < 0)
+                        assert(verb);
+                assert(changes[i].path);
 
                 /* When making changes here, make sure to also change install_error() in dbus-manager.c. */
 
@@ -376,7 +381,7 @@ void install_changes_dump(int r, const char *verb, const InstallChange *changes,
                         break;
                 case INSTALL_CHANGE_AUXILIARY_FAILED:
                         if (!quiet)
-                                log_warning("Failed to enable auxiliary unit %s, ignoring.", changes[i].source);
+                                log_warning("Failed to enable auxiliary unit %s, ignoring.", changes[i].path);
                         break;
                 case -EEXIST:
                         if (changes[i].source)
@@ -1653,7 +1658,7 @@ static int install_info_traverse(
                 r = install_info_follow(ctx, i, lp, flags,
                                         /* If linked, don't look at the target name */
                                         /* ignore_different_name= */ i->install_mode == INSTALL_MODE_LINKED);
-                if (r == -EXDEV) {
+                if (r == -EXDEV && i->symlink_target) {
                         _cleanup_free_ char *buffer = NULL;
                         const char *bn;
 
@@ -1990,6 +1995,8 @@ static int install_info_symlink_wants(
                         install_changes_add(changes, n_changes, q, *s, NULL);
                         if (r >= 0)
                                 r = q;
+
+                        continue;
                 }
 
                 if (!unit_name_is_valid(dst, valid_dst_type)) {
@@ -2134,7 +2141,7 @@ static int install_context_apply(
                 q = install_info_traverse(ctx, lp, i, flags, NULL);
                 if (q < 0) {
                         if (i->auxiliary) {
-                                q = install_changes_add(changes, n_changes, INSTALL_CHANGE_AUXILIARY_FAILED, NULL, i->name);
+                                q = install_changes_add(changes, n_changes, INSTALL_CHANGE_AUXILIARY_FAILED, i->name, NULL);
                                 if (q < 0)
                                         return q;
                                 continue;
@@ -2863,7 +2870,7 @@ static int normalize_linked_files(
                 char ***ret_files) {
 
         /* This is similar to normalize_filenames()/normalize_names() in src/systemctl/,
-         * but operates on real unit names. For each argument we we look up the actual path
+         * but operates on real unit names. For each argument we look up the actual path
          * where the unit is found. This way linked units can be re-enabled successfully. */
 
         _cleanup_strv_free_ char **files = NULL, **names = NULL;

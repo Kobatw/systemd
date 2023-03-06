@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "cgroup-setup.h"
 #include "dbus-scope.h"
 #include "dbus-unit.h"
 #include "exit-status.h"
@@ -530,8 +531,8 @@ static void scope_reset_failed(Unit *u) {
         s->result = SCOPE_SUCCESS;
 }
 
-static int scope_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
-        return unit_kill_common(u, who, signo, -1, -1, error);
+static int scope_kill(Unit *u, KillWho who, int signo, int code, int value, sd_bus_error *error) {
+        return unit_kill_common(u, who, signo, code, value, -1, -1, error);
 }
 
 static int scope_get_timeout(Unit *u, usec_t *timeout) {
@@ -789,6 +790,10 @@ static void scope_enumerate_perpetual(Manager *m) {
 
         unit_add_to_load_queue(u);
         unit_add_to_dbus_queue(u);
+        /* Enqueue an explicit cgroup realization here. Unlike other cgroups this one already exists and is
+         * populated (by us, after all!) already, even when we are not in a reload cycle. Hence we cannot
+         * apply the settings at creation time anymore, but let's at least apply them asynchronously. */
+        unit_add_to_cgroup_realize_queue(u);
 }
 
 static const char* const scope_result_table[_SCOPE_RESULT_MAX] = {

@@ -31,6 +31,7 @@
 #include "bus-util.h"
 #include "clean-ipc.h"
 #include "clock-util.h"
+#include "common-signal.h"
 #include "constants.h"
 #include "core-varlink.h"
 #include "creds-util.h"
@@ -69,6 +70,7 @@
 #include "path-lookup.h"
 #include "path-util.h"
 #include "process-util.h"
+#include "psi-util.h"
 #include "ratelimit.h"
 #include "rlimit-util.h"
 #include "rm-rf.h"
@@ -567,7 +569,11 @@ static int manager_setup_signals(Manager *m) {
                         SIGRTMIN+15, /* systemd: Immediate reboot */
                         SIGRTMIN+16, /* systemd: Immediate kexec */
 
-                        /* ... space for more immediate system state changes ... */
+                        /* ... space for one more immediate system state change ... */
+
+                        SIGRTMIN+18, /* systemd: control command */
+
+                        /* ... space ... */
 
                         SIGRTMIN+20, /* systemd: enable status messages */
                         SIGRTMIN+21, /* systemd: disable status messages */
@@ -635,8 +641,16 @@ static char** sanitize_environment(char **l) {
                         "LISTEN_FDS",
                         "LISTEN_PID",
                         "LOGS_DIRECTORY",
+                        "LOG_NAMESPACE",
                         "MAINPID",
                         "MANAGERPID",
+                        "MEMORY_PRESSURE_WATCH",
+                        "MEMORY_PRESSURE_WRITE",
+                        "MONITOR_EXIT_CODE",
+                        "MONITOR_EXIT_STATUS",
+                        "MONITOR_INVOCATION_ID",
+                        "MONITOR_SERVICE_RESULT",
+                        "MONITOR_UNIT",
                         "NOTIFY_SOCKET",
                         "PIDFILE",
                         "REMOTE_ADDR",
@@ -644,6 +658,11 @@ static char** sanitize_environment(char **l) {
                         "RUNTIME_DIRECTORY",
                         "SERVICE_RESULT",
                         "STATE_DIRECTORY",
+                        "SYSTEMD_EXEC_PID",
+                        "TRIGGER_PATH",
+                        "TRIGGER_TIMER_MONOTONIC_USEC",
+                        "TRIGGER_TIMER_REALTIME_USEC",
+                        "TRIGGER_UNIT",
                         "WATCHDOG_PID",
                         "WATCHDOG_USEC",
                         NULL);
@@ -660,13 +679,11 @@ int manager_default_environment(Manager *m) {
         m->transient_environment = strv_free(m->transient_environment);
 
         if (MANAGER_IS_SYSTEM(m)) {
-                /* The system manager always starts with a clean
-                 * environment for its children. It does not import
-                 * the kernel's or the parents' exported variables.
+                /* The system manager always starts with a clean environment for its children. It does not
+                 * import the kernel's or the parents' exported variables.
                  *
-                 * The initial passed environment is untouched to keep
-                 * /proc/self/environ valid; it is used for tagging
-                 * the init process inside containers. */
+                 * The initial passed environment is untouched to keep /proc/self/environ valid; it is used
+                 * for tagging the init process inside containers. */
                 m->transient_environment = strv_new("PATH=" DEFAULT_PATH);
                 if (!m->transient_environment)
                         return log_oom();
@@ -685,7 +702,6 @@ int manager_default_environment(Manager *m) {
         }
 
         sanitize_environment(m->transient_environment);
-
         return 0;
 }
 
@@ -779,6 +795,31 @@ static int manager_setup_sigchld_event_source(Manager *m) {
         return 0;
 }
 
+int manager_setup_memory_pressure_event_source(Manager *m) {
+        int r;
+
+        assert(m);
+
+        m->memory_pressure_event_source = sd_event_source_disable_unref(m->memory_pressure_event_source);
+
+        r = sd_event_add_memory_pressure(m->event, &m->memory_pressure_event_source, NULL, NULL);
+        if (r < 0)
+                log_full_errno(ERRNO_IS_NOT_SUPPORTED(r) || ERRNO_IS_PRIVILEGE(r) || (r == -EHOSTDOWN) ? LOG_DEBUG : LOG_NOTICE, r,
+                               "Failed to establish memory pressure event source, ignoring: %m");
+        else if (m->default_memory_pressure_threshold_usec != USEC_INFINITY) {
+
+                /* If there's a default memory pressure threshold set, also apply it to the service manager itself */
+                r = sd_event_source_set_memory_pressure_period(
+                                m->memory_pressure_event_source,
+                                m->default_memory_pressure_threshold_usec,
+                                MEMORY_PRESSURE_DEFAULT_WINDOW_USEC);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to adjust memory pressure threshold, ignoring: %m");
+        }
+
+        return 0;
+}
+
 static int manager_find_credentials_dirs(Manager *m) {
         const char *e;
         int r;
@@ -835,10 +876,10 @@ int manager_new(LookupScope scope, ManagerTestRunFlags test_run_flags, Manager *
                 .default_memory_accounting = MEMORY_ACCOUNTING_DEFAULT,
                 .default_tasks_accounting = true,
                 .default_tasks_max = TASKS_MAX_UNSET,
-                .default_timeout_start_usec = DEFAULT_TIMEOUT_USEC,
-                .default_timeout_stop_usec = DEFAULT_TIMEOUT_USEC,
+                .default_timeout_start_usec = manager_default_timeout(scope == LOOKUP_SCOPE_SYSTEM),
+                .default_timeout_stop_usec = manager_default_timeout(scope == LOOKUP_SCOPE_SYSTEM),
                 .default_restart_usec = DEFAULT_RESTART_USEC,
-                .default_device_timeout_usec = DEFAULT_TIMEOUT_USEC,
+                .default_device_timeout_usec = manager_default_timeout(scope == LOOKUP_SCOPE_SYSTEM),
 
                 .original_log_level = -1,
                 .original_log_target = _LOG_TARGET_INVALID,
@@ -869,6 +910,9 @@ int manager_new(LookupScope scope, ManagerTestRunFlags test_run_flags, Manager *
                 .test_run_flags = test_run_flags,
 
                 .default_oom_policy = OOM_STOP,
+
+                .default_memory_pressure_watch = CGROUP_PRESSURE_WATCH_AUTO,
+                .default_memory_pressure_threshold_usec = USEC_INFINITY,
         };
 
 #if ENABLE_EFI
@@ -956,6 +1000,10 @@ int manager_new(LookupScope scope, ManagerTestRunFlags test_run_flags, Manager *
                 (void) manager_setup_timezone_change(m);
 
                 r = manager_setup_sigchld_event_source(m);
+                if (r < 0)
+                        return r;
+
+                r = manager_setup_memory_pressure_event_source(m);
                 if (r < 0)
                         return r;
 
@@ -1533,6 +1581,7 @@ Manager* manager_free(Manager *m) {
         sd_event_source_unref(m->jobs_in_progress_event_source);
         sd_event_source_unref(m->run_queue_event_source);
         sd_event_source_unref(m->user_lookup_event_source);
+        sd_event_source_unref(m->memory_pressure_event_source);
 
         safe_close(m->signal_fd);
         safe_close(m->notify_fd);
@@ -2884,6 +2933,47 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
 
                 switch (sfsi.ssi_signo - SIGRTMIN) {
 
+                case 18: {
+                        bool generic = false;
+
+                        if (sfsi.ssi_code != SI_QUEUE)
+                                generic = true;
+                        else {
+                                /* Override a few select commands by our own PID1-specific logic */
+
+                                switch (sfsi.ssi_int) {
+
+                                case _COMMON_SIGNAL_COMMAND_LOG_LEVEL_BASE..._COMMON_SIGNAL_COMMAND_LOG_LEVEL_END:
+                                        manager_override_log_level(m, sfsi.ssi_int - _COMMON_SIGNAL_COMMAND_LOG_LEVEL_BASE);
+                                        break;
+
+                                case COMMON_SIGNAL_COMMAND_CONSOLE:
+                                        manager_override_log_target(m, LOG_TARGET_CONSOLE);
+                                        break;
+
+                                case COMMON_SIGNAL_COMMAND_JOURNAL:
+                                        manager_override_log_target(m, LOG_TARGET_JOURNAL);
+                                        break;
+
+                                case COMMON_SIGNAL_COMMAND_KMSG:
+                                        manager_override_log_target(m, LOG_TARGET_KMSG);
+                                        break;
+
+                                case COMMON_SIGNAL_COMMAND_NULL:
+                                        manager_override_log_target(m, LOG_TARGET_NULL);
+                                        break;
+
+                                default:
+                                        generic = true;
+                                }
+                        }
+
+                        if (generic)
+                                return sigrtmin18_handler(source, &sfsi, NULL);
+
+                        break;
+                }
+
                 case 20:
                         manager_override_show_status(m, SHOW_STATUS_YES, "signal");
                         break;
@@ -2994,7 +3084,7 @@ static int manager_dispatch_idle_pipe_fd(sd_event_source *source, int fd, uint32
          * on services that want to own the console exclusively without our interference. */
         m->no_console_output = m->n_on_console > 0;
 
-        /* Acknowledge the child's request, and let all all other children know too that they shouldn't wait
+        /* Acknowledge the child's request, and let all other children know too that they shouldn't wait
          * any longer by closing the pipes towards them, which is what they are waiting for. */
         manager_close_idle_pipe(m);
 
@@ -3829,11 +3919,24 @@ static int manager_run_generators(Manager *m) {
         }
 
         r = safe_fork("(sd-gens)",
-                      FORK_RESET_SIGNALS | FORK_LOG | FORK_WAIT | FORK_NEW_MOUNTNS | FORK_MOUNTNS_SLAVE | FORK_PRIVATE_TMP,
+                      FORK_RESET_SIGNALS | FORK_WAIT | FORK_NEW_MOUNTNS | FORK_MOUNTNS_SLAVE | FORK_PRIVATE_TMP,
                       NULL);
         if (r == 0) {
                 r = manager_execute_generators(m, paths, /* remount_ro= */ true);
                 _exit(r >= 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+        }
+        if (r < 0) {
+                if (!ERRNO_IS_PRIVILEGE(r)) {
+                        log_error_errno(r, "Failed to fork off sandboxing environment for executing generators: %m");
+                        goto finish;
+                }
+
+                /* Failed to fork with new mount namespace? Maybe, running in a container environment with
+                 * seccomp or without capability. */
+                log_debug_errno(r,
+                                "Failed to fork off sandboxing environment for executing generators. "
+                                "Falling back to execute generators without sandboxing: %m");
+                r = manager_execute_generators(m, paths, /* remount_ro= */ false);
         }
 
 finish:
@@ -4547,7 +4650,7 @@ char* manager_taint_string(const Manager *m) {
         if (clock_is_localtime(NULL) > 0)
                 stage[n++] = "local-hwclock";
 
-        if (os_release_support_ended(NULL, true) > 0)
+        if (os_release_support_ended(NULL, /* quiet= */ true, NULL) > 0)
                 stage[n++] = "support-ended";
 
         _cleanup_free_ char *destination = NULL;

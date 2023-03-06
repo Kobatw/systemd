@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include <efi.h>
-#include <efilib.h>
-
 #include "ticks.h"
 #include "util.h"
 #include "vmm.h"
@@ -33,7 +30,7 @@ static uint64_t ticks_read(void) {
 #elif defined(__aarch64__)
 static uint64_t ticks_read(void) {
         uint64_t val;
-        __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (val));
+        asm volatile("mrs %0, cntvct_el0" : "=r"(val));
         return val;
 }
 #else
@@ -45,7 +42,7 @@ static uint64_t ticks_read(void) {
 #if defined(__aarch64__)
 static uint64_t ticks_freq(void) {
         uint64_t freq;
-        __asm__ volatile ("mrs %0, cntfrq_el0": "=r" (freq));
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
         return freq;
 }
 #else

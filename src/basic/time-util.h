@@ -35,6 +35,7 @@ typedef enum TimestampStyle {
         TIMESTAMP_UTC,
         TIMESTAMP_US_UTC,
         TIMESTAMP_UNIX,
+        TIMESTAMP_DATE,
         _TIMESTAMP_STYLE_MAX,
         _TIMESTAMP_STYLE_INVALID = -EINVAL,
 } TimestampStyle;
@@ -65,7 +66,6 @@ typedef enum TimestampStyle {
 /* We assume a maximum timezone length of 6. TZNAME_MAX is not defined on Linux, but glibc internally initializes this
  * to 6. Let's rely on that. */
 #define FORMAT_TIMESTAMP_MAX (3U+1U+10U+1U+8U+1U+6U+1U+6U+1U)
-#define FORMAT_TIMESTAMP_WIDTH 28U /* when outputting, assume this width */
 #define FORMAT_TIMESTAMP_RELATIVE_MAX 256U
 #define FORMAT_TIMESPAN_MAX 64U
 
@@ -123,8 +123,13 @@ struct timeval* timeval_store(struct timeval *tv, usec_t u);
 #define TIMEVAL_STORE(u) timeval_store(&(struct timeval) {}, (u))
 
 char* format_timestamp_style(char *buf, size_t l, usec_t t, TimestampStyle style) _warn_unused_result_;
-char* format_timestamp_relative(char *buf, size_t l, usec_t t) _warn_unused_result_;
+char* format_timestamp_relative_full(char *buf, size_t l, usec_t t, bool implicit_left) _warn_unused_result_;
 char* format_timespan(char *buf, size_t l, usec_t t, usec_t accuracy) _warn_unused_result_;
+
+_warn_unused_result_
+static inline char* format_timestamp_relative(char *buf, size_t l, usec_t t)  {
+        return format_timestamp_relative_full(buf, l, t, false);
+}
 
 _warn_unused_result_
 static inline char* format_timestamp(char *buf, size_t l, usec_t t) {
@@ -141,15 +146,15 @@ static inline char* format_timestamp(char *buf, size_t l, usec_t t) {
 #define FORMAT_TIMESTAMP_STYLE(t, style) \
         format_timestamp_style((char[FORMAT_TIMESTAMP_MAX]){}, FORMAT_TIMESTAMP_MAX, t, style)
 
-int parse_timestamp(const char *t, usec_t *usec);
+int parse_timestamp(const char *t, usec_t *ret);
 
-int parse_sec(const char *t, usec_t *usec);
-int parse_sec_fix_0(const char *t, usec_t *usec);
-int parse_sec_def_infinity(const char *t, usec_t *usec);
-int parse_time(const char *t, usec_t *usec, usec_t default_unit);
-int parse_nsec(const char *t, nsec_t *nsec);
+int parse_sec(const char *t, usec_t *ret);
+int parse_sec_fix_0(const char *t, usec_t *ret);
+int parse_sec_def_infinity(const char *t, usec_t *ret);
+int parse_time(const char *t, usec_t *ret, usec_t default_unit);
+int parse_nsec(const char *t, nsec_t *ret);
 
-int get_timezones(char ***l);
+int get_timezones(char ***ret);
 int verify_timezone(const char *name, int log_level);
 static inline bool timezone_is_valid(const char *name, int log_level) {
         return verify_timezone(name, log_level) >= 0;
@@ -159,7 +164,7 @@ bool clock_supported(clockid_t clock);
 
 usec_t usec_shift_clock(usec_t, clockid_t from, clockid_t to);
 
-int get_timezone(char **timezone);
+int get_timezone(char **ret);
 
 time_t mktime_or_timegm(struct tm *tm, bool utc);
 struct tm *localtime_or_gmtime_r(const time_t *t, struct tm *tm, bool utc);

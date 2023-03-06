@@ -20,7 +20,7 @@ jobs:
         template: [ bug_report.yml, feature_request.yml ]
 
     steps:
-      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
 
       - name: Parse issue form
         uses: stefanbuck/github-issue-parser@c1a559d78bfb8dd05216dab9ffd2b91082ff5324
@@ -29,7 +29,7 @@ jobs:
           template-path: .github/ISSUE_TEMPLATE/${{ matrix.template }}
 
       - name: Set labels based on component field
-        uses: redhat-plumbers-in-action/advanced-issue-labeler@88209aef583c66312529c515d41ea6a710a4baba
+        uses: redhat-plumbers-in-action/advanced-issue-labeler@25a1e41826424cdf577c71b58c852df4347f13b8
         with:
           issue-form: ${{ steps.issue-parser.outputs.jsonString }}
           template: ${{ matrix.template }}

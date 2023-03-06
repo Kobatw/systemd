@@ -12,7 +12,7 @@
 #include <seccomp.h>
 #endif
 #if HAVE_VALGRIND_VALGRIND_H
-#include <valgrind/valgrind.h>
+#  include <valgrind/valgrind.h>
 #endif
 
 #include "sd-bus.h"
@@ -75,6 +75,7 @@
 #include "pretty-print.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
+#include "psi-util.h"
 #include "random-util.h"
 #include "rlimit-util.h"
 #if HAVE_SECCOMP
@@ -162,6 +163,8 @@ static bool arg_default_blockio_accounting;
 static bool arg_default_memory_accounting;
 static bool arg_default_tasks_accounting;
 static TasksMax arg_default_tasks_max;
+static usec_t arg_default_memory_pressure_threshold_usec;
+static CGroupPressureWatch arg_default_memory_pressure_watch;
 static sd_id128_t arg_machine_id;
 static EmergencyAction arg_cad_burst_action;
 static OOMPolicy arg_default_oom_policy;
@@ -645,6 +648,9 @@ static int parse_config_file(void) {
                 { "Manager", "NoNewPrivileges",              config_parse_bool,                  0,                        &arg_no_new_privs                 },
 #if HAVE_SECCOMP
                 { "Manager", "SystemCallArchitectures",      config_parse_syscall_archs,         0,                        &arg_syscall_archs                },
+#else
+                { "Manager", "SystemCallArchitectures",      config_parse_warn_compat,           DISABLED_CONFIGURATION,   NULL                              },
+
 #endif
                 { "Manager", "TimerSlackNSec",               config_parse_nsec,                  0,                        &arg_timer_slack_nsec             },
                 { "Manager", "DefaultTimerAccuracySec",      config_parse_sec,                   0,                        &arg_default_timer_accuracy_usec  },
@@ -683,6 +689,8 @@ static int parse_config_file(void) {
                 { "Manager", "DefaultMemoryAccounting",      config_parse_bool,                  0,                        &arg_default_memory_accounting    },
                 { "Manager", "DefaultTasksAccounting",       config_parse_bool,                  0,                        &arg_default_tasks_accounting     },
                 { "Manager", "DefaultTasksMax",              config_parse_tasks_max,             0,                        &arg_default_tasks_max            },
+                { "Manager", "DefaultMemoryPressureThresholdSec", config_parse_sec,              0,                        &arg_default_memory_pressure_threshold_usec },
+                { "Manager", "DefaultMemoryPressureWatch",   config_parse_cgroup_pressure_watch, 0,                        &arg_default_memory_pressure_watch },
                 { "Manager", "CtrlAltDelBurstAction",        config_parse_emergency_action,      arg_system,               &arg_cad_burst_action             },
                 { "Manager", "DefaultOOMPolicy",             config_parse_oom_policy,            0,                        &arg_default_oom_policy           },
                 { "Manager", "DefaultOOMScoreAdjust",        config_parse_oom_score_adjust,      0,                        NULL                              },
@@ -764,6 +772,8 @@ static void set_manager_defaults(Manager *m) {
         m->default_memory_accounting = arg_default_memory_accounting;
         m->default_tasks_accounting = arg_default_tasks_accounting;
         m->default_tasks_max = arg_default_tasks_max;
+        m->default_memory_pressure_watch = arg_default_memory_pressure_watch;
+        m->default_memory_pressure_threshold_usec = arg_default_memory_pressure_threshold_usec;
         m->default_oom_policy = arg_default_oom_policy;
         m->default_oom_score_adjust_set = arg_default_oom_score_adjust_set;
         m->default_oom_score_adjust = arg_default_oom_score_adjust;
@@ -1371,7 +1381,7 @@ static int os_release_status(void) {
                 return log_full_errno(r == -ENOENT ? LOG_DEBUG : LOG_WARNING, r,
                                       "Failed to read os-release file, ignoring: %m");
 
-        const char *label = empty_to_null(pretty_name) ?: empty_to_null(name) ?: "Linux";
+        const char *label = os_release_pretty_name(pretty_name, name);
 
         if (show_status_on(arg_show_status)) {
                 if (log_get_show_color())
@@ -1385,7 +1395,7 @@ static int os_release_status(void) {
                                       label);
         }
 
-        if (support_end && os_release_support_ended(support_end, false) > 0)
+        if (support_end && os_release_support_ended(support_end, /* quiet */ false, NULL) > 0)
                 /* pretty_name may include the version already, so we'll print the version only if we
                  * have it and we're not using pretty_name. */
                 status_printf(ANSI_HIGHLIGHT_RED "  !!  " ANSI_NORMAL, 0,
@@ -1863,8 +1873,8 @@ static int do_reexecute(
                 assert(i <= args_size);
 
                 /*
-                 * We want valgrind to print its memory usage summary before reexecution.  Valgrind won't do
-                 * this is on its own on exec(), but it will do it on exit().  Hence, to ensure we get a
+                 * We want valgrind to print its memory usage summary before reexecution. Valgrind won't do
+                 * this is on its own on exec(), but it will do it on exit(). Hence, to ensure we get a
                  * summary here, fork() off a child, let it exit() cleanly, so that it prints the summary,
                  * and wait() for it in the parent, before proceeding into the exec().
                  */
@@ -2436,11 +2446,11 @@ static void reset_arguments(void) {
         arg_default_std_output = EXEC_OUTPUT_JOURNAL;
         arg_default_std_error = EXEC_OUTPUT_INHERIT;
         arg_default_restart_usec = DEFAULT_RESTART_USEC;
-        arg_default_timeout_start_usec = DEFAULT_TIMEOUT_USEC;
-        arg_default_timeout_stop_usec = DEFAULT_TIMEOUT_USEC;
-        arg_default_timeout_abort_usec = DEFAULT_TIMEOUT_USEC;
+        arg_default_timeout_start_usec = manager_default_timeout(arg_system);
+        arg_default_timeout_stop_usec = manager_default_timeout(arg_system);
+        arg_default_timeout_abort_usec = manager_default_timeout(arg_system);
         arg_default_timeout_abort_set = false;
-        arg_default_device_timeout_usec = DEFAULT_TIMEOUT_USEC;
+        arg_default_device_timeout_usec = manager_default_timeout(arg_system);
         arg_default_start_limit_interval = DEFAULT_START_LIMIT_INTERVAL;
         arg_default_start_limit_burst = DEFAULT_START_LIMIT_BURST;
         arg_runtime_watchdog = 0;
@@ -2455,7 +2465,7 @@ static void reset_arguments(void) {
         arg_manager_environment = strv_free(arg_manager_environment);
         rlimit_free_all(arg_default_rlimit);
 
-        arg_capability_bounding_set = CAP_ALL;
+        arg_capability_bounding_set = CAP_MASK_UNSET;
         arg_no_new_privs = false;
         arg_timer_slack_nsec = NSEC_INFINITY;
         arg_default_timer_accuracy_usec = 1 * USEC_PER_MINUTE;
@@ -2471,6 +2481,8 @@ static void reset_arguments(void) {
         arg_default_memory_accounting = MEMORY_ACCOUNTING_DEFAULT;
         arg_default_tasks_accounting = true;
         arg_default_tasks_max = DEFAULT_TASKS_MAX;
+        arg_default_memory_pressure_threshold_usec = MEMORY_PRESSURE_DEFAULT_THRESHOLD_USEC;
+        arg_default_memory_pressure_watch = CGROUP_PRESSURE_WATCH_AUTO;
         arg_machine_id = (sd_id128_t) {};
         arg_cad_burst_action = EMERGENCY_ACTION_REBOOT_FORCE;
         arg_default_oom_policy = OOM_STOP;
@@ -2784,8 +2796,7 @@ int main(int argc, char *argv[]) {
                 if (detect_container() <= 0) {
 
                         /* Running outside of a container as PID 1 */
-                        log_set_target(LOG_TARGET_KMSG);
-                        log_open();
+                        log_set_target_and_open(LOG_TARGET_KMSG);
 
                         if (in_initrd())
                                 initrd_timestamp = userspace_timestamp;
@@ -2829,8 +2840,7 @@ int main(int argc, char *argv[]) {
 
                 } else {
                         /* Running inside a container, as PID 1 */
-                        log_set_target(LOG_TARGET_CONSOLE);
-                        log_open();
+                        log_set_target_and_open(LOG_TARGET_CONSOLE);
 
                         /* For later on, see above... */
                         log_set_target(LOG_TARGET_JOURNAL);
@@ -2877,8 +2887,7 @@ int main(int argc, char *argv[]) {
                 /* Running as user instance */
                 arg_system = false;
                 log_set_always_reopen_console(true);
-                log_set_target(LOG_TARGET_AUTO);
-                log_open();
+                log_set_target_and_open(LOG_TARGET_AUTO);
 
                 /* clear the kernel timestamp, because we are not PID 1 */
                 kernel_timestamp = DUAL_TIMESTAMP_NULL;

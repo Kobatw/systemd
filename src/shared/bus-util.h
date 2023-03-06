@@ -45,6 +45,9 @@ int bus_log_connect_error(int r, BusTransport transport);
 #define bus_log_parse_error(r)                                  \
         log_error_errno(r, "Failed to parse bus message: %m")
 
+#define bus_log_parse_error_debug(r)                            \
+        log_debug_errno(r, "Failed to parse bus message: %m")
+
 #define bus_log_create_error(r)                                 \
         log_error_errno(r, "Failed to create bus message: %m")
 
@@ -59,5 +62,8 @@ static inline int bus_open_system_watch_bind(sd_bus **ret) {
 }
 
 int bus_reply_pair_array(sd_bus_message *m, char **l);
+
+/* Listen to GetMallocInfo() calls to 'destination' and return malloc_info() via FD */
+int bus_register_malloc_status(sd_bus *bus, const char *destination);
 
 extern const struct hash_ops bus_message_hash_ops;

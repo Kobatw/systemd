@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: LGPL-2.1+
+# SPDX-License-Identifier: LGPL-2.1-or-later
 
 # pylint: disable=missing-docstring,invalid-name,import-outside-toplevel
 # pylint: disable=consider-using-with,unspecified-encoding,line-too-long
@@ -65,7 +65,7 @@ def shell_join(cmd):
     return ' '.join(shlex.quote(str(x)) for x in cmd)
 
 
-def path_is_readable(s: str | None) -> pathlib.Path | None:
+def path_is_readable(s: typing.Optional[str]) -> typing.Optional[pathlib.Path]:
     """Convert a filename string to a Path and verify access."""
     if s is None:
         return None
@@ -80,13 +80,20 @@ def path_is_readable(s: str | None) -> pathlib.Path | None:
 def pe_next_section_offset(filename):
     import pefile
 
-    pe = pefile.PE(filename)
+    pe = pefile.PE(filename, fast_load=True)
     section = pe.sections[-1]
     return pe.OPTIONAL_HEADER.ImageBase + section.VirtualAddress + section.Misc_VirtualSize
 
 
 def round_up(x, blocksize=4096):
     return (x + blocksize - 1) // blocksize * blocksize
+
+
+def try_import(modname, name=None):
+    try:
+        return __import__(modname)
+    except ImportError as e:
+        raise ValueError(f'Kernel is compressed with {name or modname}, but module unavailable') from e
 
 
 def maybe_decompress(filename):
@@ -100,20 +107,20 @@ def maybe_decompress(filename):
         return f.read()
 
     if start.startswith(b'\x1f\x8b'):
-        import gzip
+        gzip = try_import('gzip')
         return gzip.open(f).read()
 
     if start.startswith(b'\x28\xb5\x2f\xfd'):
-        import zstd
+        zstd = try_import('zstd')
         return zstd.uncompress(f.read())
 
     if start.startswith(b'\x02\x21\x4c\x18'):
-        import lz4.frame
+        lz4 = try_import('lz4.frame', 'lz4')
         return lz4.frame.decompress(f.read())
 
     if start.startswith(b'\x04\x22\x4d\x18'):
         print('Newer lz4 stream format detected! This may not boot!')
-        import lz4.frame
+        lz4 = try_import('lz4.frame', 'lz4')
         return lz4.frame.decompress(f.read())
 
     if start.startswith(b'\x89LZO'):
@@ -121,11 +128,11 @@ def maybe_decompress(filename):
         raise NotImplementedError('lzo decompression not implemented')
 
     if start.startswith(b'BZh'):
-        import bz2
+        bz2 = try_import('bz2', 'bzip2')
         return bz2.open(f).read()
 
     if start.startswith(b'\x5d\x00\x00'):
-        import lzma
+        lzma = try_import('lzma')
         return lzma.open(f).read()
 
     raise NotImplementedError(f'unknown file format (starts with {start})')
@@ -215,14 +222,14 @@ class Uname:
 class Section:
     name: str
     content: pathlib.Path
-    tmpfile: typing.IO | None = None
+    tmpfile: typing.Optional[typing.IO] = None
     flags: list[str] = dataclasses.field(default_factory=lambda: ['data', 'readonly'])
-    offset: int | None = None
+    offset: typing.Optional[int] = None
     measure: bool = False
 
     @classmethod
     def create(cls, name, contents, **kwargs):
-        if isinstance(contents, str | bytes):
+        if isinstance(contents, (str, bytes)):
             mode = 'wt' if isinstance(contents, str) else 'wb'
             tmp = tempfile.NamedTemporaryFile(mode=mode, prefix=f'tmp{name}')
             tmp.write(contents)
@@ -261,9 +268,9 @@ class Section:
 
 @dataclasses.dataclass
 class UKI:
-    executable: list[pathlib.Path|str]
+    executable: list[typing.Union[pathlib.Path, str]]
     sections: list[Section] = dataclasses.field(default_factory=list, init=False)
-    offset: int | None = dataclasses.field(default=None, init=False)
+    offset: typing.Optional[int] = dataclasses.field(default=None, init=False)
 
     def __post_init__(self):
         self.offset = round_up(pe_next_section_offset(self.executable))
@@ -426,31 +433,35 @@ def call_systemd_measure(uki, linux, opts):
 
 
 def join_initrds(initrds):
-    match initrds:
-        case []:
-            return None
-        case [initrd]:
-            return initrd
-        case multiple:
-            seq = []
-            for file in multiple:
-                initrd = file.read_bytes()
-                padding = b'\0' * round_up(len(initrd), 4)  # pad to 32 bit alignment
-                seq += [initrd, padding]
+    if len(initrds) == 0:
+        return None
+    elif len(initrds) == 1:
+        return initrds[0]
 
-            return b''.join(seq)
+    seq = []
+    for file in initrds:
+        initrd = file.read_bytes()
+        n = len(initrd)
+        padding = b'\0' * (round_up(n, 4) - n)  # pad to 32 bit alignment
+        seq += [initrd, padding]
 
-    assert False
+    return b''.join(seq)
+
+
+def pairwise(iterable):
+    a, b = itertools.tee(iterable)
+    next(b, None)
+    return zip(a, b)
 
 
 def pe_validate(filename):
     import pefile
 
-    pe = pefile.PE(filename)
+    pe = pefile.PE(filename, fast_load=True)
 
     sections = sorted(pe.sections, key=lambda s: (s.VirtualAddress, s.Misc_VirtualSize))
 
-    for l, r in itertools.pairwise(sections):
+    for l, r in pairwise(sections):
         if l.VirtualAddress + l.Misc_VirtualSize > r.VirtualAddress + r.Misc_VirtualSize:
             raise ValueError(f'Section "{l.Name.decode()}" ({l.VirtualAddress}, {l.Misc_VirtualSize}) overlaps with section "{r.Name.decode()}" ({r.VirtualAddress}, {r.Misc_VirtualSize})')
 
@@ -508,7 +519,7 @@ def make_uki(opts):
     uki = UKI(opts.stub)
     initrd = join_initrds(opts.initrd)
 
-    # TODO: derive public key from from opts.pcr_private_keys?
+    # TODO: derive public key from opts.pcr_private_keys?
     pcrpkey = opts.pcrpkey
     if pcrpkey is None:
         if opts.pcr_public_keys and len(opts.pcr_public_keys) == 1:
@@ -642,7 +653,7 @@ usage: ukify [options…] linux initrd…
 
     p.add_argument('--stub',
                    type=pathlib.Path,
-                   help='path the the sd-stub file [.text,.data,… sections]')
+                   help='path to the sd-stub file [.text,.data,… sections]')
 
     p.add_argument('--section',
                    dest='sections',

@@ -85,9 +85,10 @@
   <refsect1>
     <title>Boot Loader Specification Commands</title>
 
-    <para>These commands are available for all boot loaders that implement the <ulink
-    url="https://uapi-group.org/specifications/specs/boot_loader_specification">Boot Loader Specification</ulink> and/or the <ulink
-    url="https://systemd.io/BOOT_LOADER_INTERFACE">Boot Loader Interface</ulink>, such as
+    <para>These commands are available for all boot loaders that
+    implement the <ulink
+    url="https://uapi-group.org/specifications/specs/boot_loader_specification">Boot
+    Loader Specification</ulink>, such as
     <command>systemd-boot</command>.</para>
 
     <variablelist>
@@ -104,6 +105,32 @@
         </listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><option>unlink</option> <replaceable>ID</replaceable></term>
+
+        <listitem><para>Removes a boot loader entry including the files it refers to. Takes a single boot
+        loader entry ID string or a glob pattern as argument. Referenced files such as kernel or initrd are
+        only removed if no other entry refers to them.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>cleanup</option></term>
+
+        <listitem><para>Removes files from the ESP and XBOOTLDR partitions that belong to the entry token but
+        are not referenced in any boot loader entries.</para></listitem>
+      </varlistentry>
+    </variablelist>
+  </refsect1>
+
+  <refsect1>
+    <title>Boot Loader Interface Commands</title>
+
+    <para>These commands are available for all boot loaders that implement the <ulink
+    url="https://uapi-group.org/specifications/specs/boot_loader_specification">Boot Loader Specification</ulink> and the <ulink
+    url="https://systemd.io/BOOT_LOADER_INTERFACE">Boot Loader Interface</ulink>, such as
+    <command>systemd-boot</command>.</para>
+
+    <variablelist>
       <varlistentry>
         <term><option>set-default</option> <replaceable>ID</replaceable></term>
         <term><option>set-oneshot</option> <replaceable>ID</replaceable></term>
@@ -218,6 +245,26 @@
   </refsect1>
 
   <refsect1>
+    <title>Kernel Image Commands</title>
+
+    <variablelist>
+      <varlistentry>
+        <term><option>kernel-identify</option> <replaceable>kernel</replaceable></term>
+
+        <listitem><para>Takes a kernel image as argument. Checks what kind of kernel the image is. Returns
+        one of <literal>uki</literal>, <literal>pe</literal>, and <literal>unknown</literal>.
+        </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>kernel-inspect</option> <replaceable>kernel</replaceable></term>
+
+        <listitem><para>Takes a kernel image as argument. Prints details about the image.</para></listitem>
+      </varlistentry>
+    </variablelist>
+  </refsect1>
+
+  <refsect1>
     <title>Options</title>
     <para>The following options are understood:</para>
 
@@ -289,9 +336,25 @@
         Specification Type #2 entries should be placed in the directory <literal>$(bootctl
         -x)/EFI/Linux/</literal>.</para>
 
-        <para>Note that this option (similarly to the <option>--print-booth-path</option> option mentioned
+        <para>Note that this option (similarly to the <option>--print-boot-path</option> option mentioned
         above), is available independently from the boot loader used, i.e. also without
         <command>systemd-boot</command> being installed.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>-R</option></term>
+        <term><option>--print-root-device</option></term>
+
+        <listitem><para>Print the path to the block device node backing the root file system of the local
+        OS. This prints a path such as <filename>/dev/nvme0n1p5</filename>. If the root file system is backed
+        by dm-crypt/LUKS or dm-verity the underlying block device is returned. If the root file system is
+        backed by multiple block devices (as supported by btrfs) the operation will fail. If the switch is
+        specified twice (i.e. <option>-RR</option>) and the discovered block device is a partition device the
+        "whole" block device it belongs to is determined and printed
+        (e.g. <filename>/dev/nvme0n1</filename>). If the root file system is <literal>tmpfs</literal> (or a
+        similar in-memory file system), the block device backing <filename>/usr/</filename> is returned if
+        applicable. If the root file system is a network file system (e.g. NFS, CIFS) the operation will
+        fail.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -390,6 +453,14 @@
         the firmware's boot option menu.</para></listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><option>--dry-run</option></term>
+        <listitem><para>Dry run for <option>--unlink</option> and <option>--cleanup</option>.</para>
+
+        <para>In dry run mode, the unlink and cleanup operations only print the files that would get deleted
+        without actually deleting them.</para></listitem>
+      </varlistentry>
+
       <xi:include href="standard-options.xml" xpointer="no-pager"/>
       <xi:include href="standard-options.xml" xpointer="json" />
       <xi:include href="standard-options.xml" xpointer="help"/>
@@ -407,7 +478,9 @@
 
   <refsect1>
     <title>Exit status</title>
-    <para>On success, 0 is returned, a non-zero failure code otherwise.</para>
+    <para>On success, 0 is returned, a non-zero failure code otherwise. <command>bootctl
+    --print-root-device</command> returns exit status 80 in case the root file system is not backed by single
+    block device, and other non-zero exit statuses on other errors.</para>
   </refsect1>
 
   <refsect1>

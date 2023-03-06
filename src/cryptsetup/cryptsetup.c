@@ -92,7 +92,7 @@ static bool arg_fido2_device_auto = false;
 static void *arg_fido2_cid = NULL;
 static size_t arg_fido2_cid_size = 0;
 static char *arg_fido2_rp_id = NULL;
-static char *arg_tpm2_device = NULL; /* These and the following fields are about locking an encypted volume to the local TPM */
+static char *arg_tpm2_device = NULL; /* These and the following fields are about locking an encrypted volume to the local TPM */
 static bool arg_tpm2_device_auto = false;
 static uint32_t arg_tpm2_pcr_mask = UINT32_MAX;
 static char *arg_tpm2_signature = NULL;
@@ -828,9 +828,9 @@ static int measure_volume_key(
                 return 0;
         }
 
-        r = efi_stub_measured();
+        r = efi_stub_measured(LOG_WARNING);
         if (r < 0)
-                return log_warning_errno(r, "Failed to detect if we are running on a kernel image with TPM measurement enabled: %m");
+                return r;
         if (r == 0) {
                 log_debug("Kernel stub did not measure kernel image into the expected PCR, skipping userspace measurement, too.");
                 return 0;
@@ -841,14 +841,14 @@ static int measure_volume_key(
         if (r < 0)
                 return log_error_errno(r, "Failed to load TPM2 libraries: %m");
 
-        _cleanup_(tpm2_context_destroy) struct tpm2_context c = {};
-        r = tpm2_context_init(arg_tpm2_device, &c);
+        _cleanup_tpm2_context_ Tpm2Context *c = NULL;
+        r = tpm2_context_new(arg_tpm2_device, &c);
         if (r < 0)
                 return r;
 
         _cleanup_strv_free_ char **l = NULL;
         if (strv_isempty(arg_tpm2_measure_banks)) {
-                r = tpm2_get_good_pcr_banks_strv(c.esys_context, UINT32_C(1) << arg_tpm2_measure_pcr, &l);
+                r = tpm2_get_good_pcr_banks_strv(c, UINT32_C(1) << arg_tpm2_measure_pcr, &l);
                 if (r < 0)
                         return r;
         }
@@ -871,7 +871,7 @@ static int measure_volume_key(
         if (!s)
                 return log_oom();
 
-        r = tpm2_extend_bytes(c.esys_context, l ?: arg_tpm2_measure_banks, arg_tpm2_measure_pcr, s, SIZE_MAX, volume_key, volume_key_size);
+        r = tpm2_extend_bytes(c, l ?: arg_tpm2_measure_banks, arg_tpm2_measure_pcr, s, SIZE_MAX, volume_key, volume_key_size);
         if (r < 0)
                 return r;
 
@@ -1658,6 +1658,7 @@ static int attach_luks_or_plain_or_bitlk_by_tpm2(
                                         key_file, arg_keyfile_size, arg_keyfile_offset,
                                         key_data, key_data_size,
                                         /* policy_hash= */ NULL, /* policy_hash_size= */ 0, /* we don't know the policy hash */
+                                        /* salt= */ NULL, /* salt_size= */ 0,
                                         arg_tpm2_pin ? TPM2_FLAGS_USE_PIN : 0,
                                         until,
                                         arg_headless,
@@ -1703,8 +1704,8 @@ static int attach_luks_or_plain_or_bitlk_by_tpm2(
                          * works. */
 
                         for (;;) {
-                                _cleanup_free_ void *pubkey = NULL;
-                                size_t pubkey_size = 0;
+                                _cleanup_free_ void *pubkey = NULL, *salt = NULL;
+                                size_t pubkey_size = 0, salt_size = 0;
                                 uint32_t hash_pcr_mask, pubkey_pcr_mask;
                                 uint16_t pcr_bank, primary_alg;
                                 TPM2Flags tpm2_flags;
@@ -1720,6 +1721,7 @@ static int attach_luks_or_plain_or_bitlk_by_tpm2(
                                                 &primary_alg,
                                                 &blob, &blob_size,
                                                 &policy_hash, &policy_hash_size,
+                                                &salt, &salt_size,
                                                 &tpm2_flags,
                                                 &keyslot,
                                                 &token);
@@ -1749,6 +1751,7 @@ static int attach_luks_or_plain_or_bitlk_by_tpm2(
                                                 /* key_file= */ NULL, /* key_file_size= */ 0, /* key_file_offset= */ 0, /* no key file */
                                                 blob, blob_size,
                                                 policy_hash, policy_hash_size,
+                                                salt, salt_size,
                                                 tpm2_flags,
                                                 until,
                                                 arg_headless,

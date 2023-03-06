@@ -1,36 +1,35 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
-#include <efi.h>
-#include <efilib.h>
-#include <stdbool.h>
 #if defined(__i386__) || defined(__x86_64__)
 #  include <cpuid.h>
 #endif
 
+#include "device-path-util.h"
 #include "drivers.h"
 #include "efi-string.h"
+#include "proto/device-path.h"
 #include "string-util-fundamental.h"
 #include "util.h"
 
-#define QEMU_KERNEL_LOADER_FS_MEDIA_GUID                                \
-        { 0x1428f772, 0xb64a, 0x441e, {0xb8, 0xc3, 0x9e, 0xbd, 0xd7, 0xf8, 0x93, 0xc7 }}
+#define QEMU_KERNEL_LOADER_FS_MEDIA_GUID \
+        { 0x1428f772, 0xb64a, 0x441e, { 0xb8, 0xc3, 0x9e, 0xbd, 0xd7, 0xf8, 0x93, 0xc7 } }
 
 #define VMM_BOOT_ORDER_GUID \
-        { 0x668f4529, 0x63d0, 0x4bb5, {0xb6, 0x5d, 0x6f, 0xbb, 0x9d, 0x36, 0xa4, 0x4a }}
+        { 0x668f4529, 0x63d0, 0x4bb5, { 0xb6, 0x5d, 0x6f, 0xbb, 0x9d, 0x36, 0xa4, 0x4a } }
 
 /* detect direct boot */
 bool is_direct_boot(EFI_HANDLE device) {
         EFI_STATUS err;
-        VENDOR_DEVICE_PATH *dp; /* NB: Alignment of this structure might be quirky! */
+        VENDOR_DEVICE_PATH *dp;
 
-        err = BS->HandleProtocol(device, &DevicePathProtocol, (void **) &dp);
+        err = BS->HandleProtocol(device, MAKE_GUID_PTR(EFI_DEVICE_PATH_PROTOCOL), (void **) &dp);
         if (err != EFI_SUCCESS)
                 return false;
 
         /* 'qemu -kernel systemd-bootx64.efi' */
         if (dp->Header.Type == MEDIA_DEVICE_PATH &&
             dp->Header.SubType == MEDIA_VENDOR_DP &&
-            memcmp(&dp->Guid, &(EFI_GUID)QEMU_KERNEL_LOADER_FS_MEDIA_GUID, sizeof(EFI_GUID)) == 0) /* Don't change to efi_guid_equal() because EFI device path objects are not necessarily aligned! */
+            memcmp(&dp->Guid, MAKE_GUID_PTR(QEMU_KERNEL_LOADER_FS_MEDIA), sizeof(EFI_GUID)) == 0)
                 return true;
 
         /* loaded from firmware volume (sd-boot added to ovmf) */
@@ -39,27 +38,6 @@ bool is_direct_boot(EFI_HANDLE device) {
                 return true;
 
         return false;
-}
-
-static bool device_path_startswith(const EFI_DEVICE_PATH *dp, const EFI_DEVICE_PATH *start) {
-        if (!start)
-                return true;
-        if (!dp)
-                return false;
-        for (;;) {
-                if (IsDevicePathEnd(start))
-                        return true;
-                if (IsDevicePathEnd(dp))
-                        return false;
-                size_t l1 = DevicePathNodeLength(start);
-                size_t l2 = DevicePathNodeLength(dp);
-                if (l1 != l2)
-                        return false;
-                if (memcmp(dp, start, l1) != 0)
-                        return false;
-                start = NextDevicePathNode(start);
-                dp    = NextDevicePathNode(dp);
-        }
 }
 
 /*
@@ -91,22 +69,23 @@ EFI_STATUS vmm_open(EFI_HANDLE *ret_vmm_dev, EFI_FILE **ret_vmm_dir) {
         (void) reconnect_all_drivers();
 
         /* find all file system handles */
-        err = BS->LocateHandleBuffer(ByProtocol, &FileSystemProtocol, NULL, &n_handles, &handles);
+        err = BS->LocateHandleBuffer(
+                        ByProtocol, MAKE_GUID_PTR(EFI_SIMPLE_FILE_SYSTEM_PROTOCOL), NULL, &n_handles, &handles);
         if (err != EFI_SUCCESS)
                 return err;
 
         for (size_t order = 0;; order++) {
                 _cleanup_free_ EFI_DEVICE_PATH *dp = NULL;
-                char16_t order_str[STRLEN("VMMBootOrder") + 4 + 1];
 
-                SPrint(order_str, sizeof(order_str), u"VMMBootOrder%04x", order);
-                dp_err = efivar_get_raw(&(EFI_GUID)VMM_BOOT_ORDER_GUID, order_str, (char**)&dp, NULL);
+                _cleanup_free_ char16_t *order_str = xasprintf("VMMBootOrder%04zx", order);
+                dp_err = efivar_get_raw(MAKE_GUID_PTR(VMM_BOOT_ORDER), order_str, (char **) &dp, NULL);
 
                 for (size_t i = 0; i < n_handles; i++) {
                         _cleanup_(file_closep) EFI_FILE *root_dir = NULL, *efi_dir = NULL;
                         EFI_DEVICE_PATH *fs;
 
-                        err = BS->HandleProtocol(handles[i], &DevicePathProtocol, (void **) &fs);
+                        err = BS->HandleProtocol(
+                                        handles[i], MAKE_GUID_PTR(EFI_DEVICE_PATH_PROTOCOL), (void **) &fs);
                         if (err != EFI_SUCCESS)
                                 return err;
 
@@ -152,6 +131,11 @@ static bool cpuid_in_hypervisor(void) {
 
         return false;
 }
+
+#define SMBIOS_TABLE_GUID \
+        GUID_DEF(0xeb9d2d31, 0x2d88, 0x11d3, 0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d)
+#define SMBIOS3_TABLE_GUID \
+        GUID_DEF(0xf2fd1544, 0x9794, 0x4a2c, 0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94)
 
 typedef struct {
         uint8_t anchor_string[4];
@@ -200,17 +184,23 @@ typedef struct {
         uint8_t bios_characteristics_ext[2];
 } _packed_ SmbiosTableType0;
 
-static void *find_smbios_configuration_table(uint64_t *ret_size) {
+typedef struct {
+        SmbiosHeader header;
+        uint8_t count;
+        char contents[];
+} _packed_ SmbiosTableType11;
+
+static const void *find_smbios_configuration_table(uint64_t *ret_size) {
         assert(ret_size);
 
-        Smbios3EntryPoint *entry3 = find_configuration_table(&(EFI_GUID) SMBIOS3_TABLE_GUID);
+        const Smbios3EntryPoint *entry3 = find_configuration_table(MAKE_GUID_PTR(SMBIOS3_TABLE));
         if (entry3 && memcmp(entry3->anchor_string, "_SM3_", 5) == 0 &&
             entry3->entry_point_length <= sizeof(*entry3)) {
                 *ret_size = entry3->table_maximum_size;
                 return PHYSICAL_ADDRESS_TO_POINTER(entry3->table_address);
         }
 
-        SmbiosEntryPoint *entry = find_configuration_table(&(EFI_GUID) SMBIOS_TABLE_GUID);
+        const SmbiosEntryPoint *entry = find_configuration_table(MAKE_GUID_PTR(SMBIOS_TABLE));
         if (entry && memcmp(entry->anchor_string, "_SM_", 4) == 0 &&
             entry->entry_point_length <= sizeof(*entry)) {
                 *ret_size = entry->table_length;
@@ -220,9 +210,9 @@ static void *find_smbios_configuration_table(uint64_t *ret_size) {
         return NULL;
 }
 
-static SmbiosHeader *get_smbios_table(uint8_t type) {
+static const SmbiosHeader *get_smbios_table(uint8_t type, uint64_t *ret_size_left) {
         uint64_t size = 0;
-        uint8_t *p = find_smbios_configuration_table(&size);
+        const uint8_t *p = find_smbios_configuration_table(&size);
         if (!p)
                 return false;
 
@@ -230,7 +220,7 @@ static SmbiosHeader *get_smbios_table(uint8_t type) {
                 if (size < sizeof(SmbiosHeader))
                         return NULL;
 
-                SmbiosHeader *header = (SmbiosHeader *) p;
+                const SmbiosHeader *header = (const SmbiosHeader *) p;
 
                 /* End of table. */
                 if (header->type == 127)
@@ -239,8 +229,11 @@ static SmbiosHeader *get_smbios_table(uint8_t type) {
                 if (size < header->length)
                         return NULL;
 
-                if (header->type == type)
+                if (header->type == type) {
+                        if (ret_size_left)
+                                *ret_size_left = size;
                         return header; /* Yay! */
+                }
 
                 /* Skip over formatted area. */
                 size -= header->length;
@@ -248,22 +241,18 @@ static SmbiosHeader *get_smbios_table(uint8_t type) {
 
                 /* Skip over string table. */
                 for (;;) {
-                        while (size > 0 && *p != '\0') {
+                        const uint8_t *e = memchr(p, 0, size);
+                        if (!e)
+                                return NULL;
+
+                        if (e == p) {/* Double NUL byte means we've reached the end of the string table. */
                                 p++;
                                 size--;
-                        }
-                        if (size == 0)
-                                return NULL;
-                        p++;
-                        size--;
-
-                        /* Double NUL terminates string table. */
-                        if (*p == '\0') {
-                                if (size == 0)
-                                        return NULL;
-                                p++;
                                 break;
                         }
+
+                        size -= e + 1 - p;
+                        p = e + 1;
                 }
         }
 
@@ -272,7 +261,7 @@ static SmbiosHeader *get_smbios_table(uint8_t type) {
 
 static bool smbios_in_hypervisor(void) {
         /* Look up BIOS Information (Type 0). */
-        SmbiosTableType0 *type0 = (SmbiosTableType0 *) get_smbios_table(0);
+        const SmbiosTableType0 *type0 = (const SmbiosTableType0 *) get_smbios_table(0, NULL);
         if (!type0 || type0->header.length < sizeof(SmbiosTableType0))
                 return false;
 
@@ -287,4 +276,33 @@ bool in_hypervisor(void) {
 
         cache = cpuid_in_hypervisor() || smbios_in_hypervisor();
         return cache;
+}
+
+const char* smbios_find_oem_string(const char *name) {
+        uint64_t left;
+
+        assert(name);
+
+        const SmbiosTableType11 *type11 = (const SmbiosTableType11 *) get_smbios_table(11, &left);
+        if (!type11 || type11->header.length < sizeof(SmbiosTableType11))
+                return NULL;
+
+        assert(left >= type11->header.length);
+
+        const char *s = type11->contents;
+        left -= type11->header.length;
+
+        for (const char *p = s; p < s + left; ) {
+                const char *e = memchr(p, 0, s + left - p);
+                if (!e || e == p) /* Double NUL byte means we've reached the end of the OEM strings. */
+                        break;
+
+                const char *eq = startswith8(p, name);
+                if (eq && *eq == '=')
+                        return eq + 1;
+
+                p = e + 1;
+        }
+
+        return NULL;
 }

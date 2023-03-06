@@ -6,30 +6,33 @@
 #include "bootctl-util.h"
 #include "chase-symlinks.h"
 #include "copy.h"
+#include "dirent-util.h"
+#include "efi-api.h"
 #include "env-file.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
 #include "glyph-util.h"
+#include "id128-util.h"
 #include "os-util.h"
 #include "path-util.h"
+#include "rm-rf.h"
 #include "stat-util.h"
 #include "sync-util.h"
 #include "tmpfile-util.h"
 #include "umask-util.h"
 #include "utf8.h"
-#include "dirent-util.h"
-#include "efi-api.h"
-#include "rm-rf.h"
 
 static int load_etc_machine_id(void) {
         int r;
 
         r = sd_id128_get_machine(&arg_machine_id);
-        if (IN_SET(r, -ENOENT, -ENOMEDIUM, -ENOPKG)) /* Not set or empty */
-                return 0;
-        if (r < 0)
+        if (r < 0) {
+                if (ERRNO_IS_MACHINE_ID_UNSET(r)) /* Not set or empty */
+                        return 0;
+
                 return log_error_errno(r, "Failed to get machine-id: %m");
+        }
 
         log_debug("Loaded machine ID %s from /etc/machine-id.", SD_ID128_TO_STRING(arg_machine_id));
         return 0;
@@ -40,10 +43,14 @@ static int load_etc_machine_info(void) {
          * for setting up the ESP in /etc/machine-info. The newer /etc/kernel/entry-token file, as well as
          * the $layout field in /etc/kernel/install.conf are better replacements for this though, hence this
          * has been deprecated and is only returned for compatibility. */
-        _cleanup_free_ char *s = NULL, *layout = NULL;
+        _cleanup_free_ char *p = NULL, *s = NULL, *layout = NULL;
         int r;
 
-        r = parse_env_file(NULL, "/etc/machine-info",
+        p = path_join(arg_root, "etc/machine-info");
+        if (!p)
+                return log_oom();
+
+        r = parse_env_file(NULL, p,
                            "KERNEL_INSTALL_LAYOUT", &layout,
                            "KERNEL_INSTALL_MACHINE_ID", &s);
         if (r == -ENOENT)
@@ -60,7 +67,7 @@ static int load_etc_machine_info(void) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to parse KERNEL_INSTALL_MACHINE_ID=%s in /etc/machine-info: %m", s);
 
-                log_debug("Loaded KERNEL_INSTALL_MACHINE_ID=%s from KERNEL_INSTALL_MACHINE_ID in /etc/machine-info.",
+                log_debug("Loaded KERNEL_INSTALL_MACHINE_ID=%s from /etc/machine-info.",
                           SD_ID128_TO_STRING(arg_machine_id));
         }
 
@@ -80,7 +87,7 @@ static int load_etc_kernel_install_conf(void) {
         _cleanup_free_ char *layout = NULL, *p = NULL;
         int r;
 
-        p = path_join(etc_kernel(), "install.conf");
+        p = path_join(arg_root, etc_kernel(), "install.conf");
         if (!p)
                 return log_oom();
 
@@ -91,7 +98,7 @@ static int load_etc_kernel_install_conf(void) {
                 return log_error_errno(r, "Failed to parse %s: %m", p);
 
         if (!isempty(layout)) {
-                log_debug("layout=%s is specified in /etc/machine-info.", layout);
+                log_debug("layout=%s is specified in %s.", layout, p);
                 free_and_replace(arg_install_layout, layout);
         }
 
@@ -419,12 +426,14 @@ static int install_binaries(const char *esp_path, const char *arch, bool force) 
 static int install_loader_config(const char *esp_path) {
         _cleanup_(unlink_and_freep) char *t = NULL;
         _cleanup_fclose_ FILE *f = NULL;
-        const char *p;
+        _cleanup_free_ char *p = NULL;
         int r;
 
         assert(arg_make_entry_directory >= 0);
 
-        p = prefix_roota(esp_path, "/loader/loader.conf");
+        p = path_join(esp_path, "/loader/loader.conf");
+        if (!p)
+                return log_oom();
         if (access(p, F_OK) >= 0) /* Silently skip creation if the file already exists (early check) */
                 return 0;
 
@@ -440,7 +449,7 @@ static int install_loader_config(const char *esp_path) {
                 fprintf(f, "default %s-*\n", arg_entry_token);
         }
 
-        r = flink_tmpfile(f, t, p);
+        r = flink_tmpfile(f, t, p, /* replace= */ false);
         if (r == -EEXIST)
                 return 0; /* Silently skip creation if the file exists now (recheck) */
         if (r < 0)
@@ -469,7 +478,7 @@ static int install_loader_specification(const char *root) {
 
         fprintf(f, "type1\n");
 
-        r = flink_tmpfile(f, t, p);
+        r = flink_tmpfile(f, t, p, /* replace= */ false);
         if (r == -EEXIST)
                 return 0; /* Silently skip creation if the file exists now (recheck) */
         if (r < 0)
@@ -503,13 +512,13 @@ static int install_entry_token(void) {
         if (!arg_make_entry_directory && arg_entry_token_type == ARG_ENTRY_TOKEN_MACHINE_ID)
                 return 0;
 
-        p = path_join(etc_kernel(), "entry-token");
+        p = path_join(arg_root, etc_kernel(), "entry-token");
         if (!p)
                 return log_oom();
 
         r = write_string_file(p, arg_entry_token, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC|WRITE_STRING_FILE_MKDIR_0755);
         if (r < 0)
-                return log_error_errno(r, "Failed to write entry token '%s' to %s", arg_entry_token, p);
+                return log_error_errno(r, "Failed to write entry token '%s' to %s: %m", arg_entry_token, p);
 
         return 0;
 }

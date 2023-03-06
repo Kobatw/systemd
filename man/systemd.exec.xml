@@ -1088,16 +1088,20 @@ CapabilityBoundingSet=~CAP_B CAP_C</programlisting>
         <term><varname>Personality=</varname></term>
 
         <listitem><para>Controls which kernel architecture <citerefentry
-        project='man-pages'><refentrytitle>uname</refentrytitle><manvolnum>2</manvolnum></citerefentry> shall report,
-        when invoked by unit processes. Takes one of the architecture identifiers <constant>x86</constant>,
-        <constant>x86-64</constant>, <constant>ppc</constant>, <constant>ppc-le</constant>, <constant>ppc64</constant>,
-        <constant>ppc64-le</constant>, <constant>s390</constant> or <constant>s390x</constant>. Which personality
-        architectures are supported depends on the system architecture. Usually the 64bit versions of the various
-        system architectures support their immediate 32bit personality architecture counterpart, but no others. For
-        example, <constant>x86-64</constant> systems support the <constant>x86-64</constant> and
-        <constant>x86</constant> personalities but no others. The personality feature is useful when running 32-bit
-        services on a 64-bit host system. If not specified, the personality is left unmodified and thus reflects the
-        personality of the host system's kernel.</para></listitem>
+        project='man-pages'><refentrytitle>uname</refentrytitle><manvolnum>2</manvolnum></citerefentry> shall
+        report, when invoked by unit processes. Takes one of the architecture identifiers
+        <constant>arm64</constant>, <constant>arm64-be</constant>, <constant>arm</constant>,
+        <constant>arm-be</constant>, <constant>x86</constant>, <constant>x86-64</constant>,
+        <constant>ppc</constant>, <constant>ppc-le</constant>, <constant>ppc64</constant>,
+        <constant>ppc64-le</constant>, <constant>s390</constant> or <constant>s390x</constant>. Which
+        personality architectures are supported depends on the kernel's native architecture. Usually the
+        64bit versions of the various system architectures support their immediate 32bit personality
+        architecture counterpart, but no others. For example, <constant>x86-64</constant> systems support the
+        <constant>x86-64</constant> and <constant>x86</constant> personalities but no others. The personality
+        feature is useful when running 32-bit services on a 64-bit host system. If not specified, the
+        personality is left unmodified and thus reflects the personality of the host system's kernel. This
+        option is not useful on architectures for which only one native word width was ever available, such
+        as <constant>m68k</constant> (32bit only) or <constant>alpha</constant> (64bit only).</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -1659,6 +1663,10 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         not available), and the unit should be written in a way that does not solely rely on this setting for
         security.</para>
 
+        <para>When this option is enabled, <varname>PrivateMounts=</varname> is implied unless it is
+        explicitly disabled, and <filename>/sys</filename> will be remounted to associate it with the new
+        network namespace.</para>
+
         <para>When this option is used on a socket unit any sockets bound on behalf of this unit will be
         bound within a private network namespace. This may be combined with
         <varname>JoinsNamespaceOf=</varname> to listen on sockets inside of network namespaces of other
@@ -1679,6 +1687,10 @@ BindReadOnlyPaths=/var/lib/systemd</programlisting>
         the listed units that have <varname>PrivateNetwork=</varname> or
         <varname>NetworkNamespacePath=</varname> configured, as otherwise the network namespace of those
         units is reused.</para>
+
+        <para>When this option is enabled, <varname>PrivateMounts=</varname> is implied unless it is
+        explicitly disabled, and <filename>/sys</filename> will be remounted to associate it with the new
+        network namespace.</para>
 
         <para>When this option is used on a socket unit any sockets bound on behalf of this unit will be
         bound within the specified network namespace.</para>
@@ -2007,7 +2019,9 @@ RestrictFileSystems=ext4</programlisting>
 
         <para>Note that this setting might not be supported on some systems (for example if the LSM eBPF hook is
         not enabled in the underlying kernel or if not using the unified control group hierarchy). In that case this setting
-        has no effect.</para></listitem>
+        has no effect.</para>
+
+        <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -3148,7 +3162,13 @@ StandardInputData=V2XigLJyZSBubyBzdHJhbmdlcnMgdG8gbG92ZQpZb3Uga25vdyB0aGUgcnVsZX
         authenticated credentials improves security as credentials are not stored in plaintext and only
         authenticated and decrypted into plaintext the moment a service requiring them is started. Moreover,
         credentials may be bound to the local hardware and installations, so that they cannot easily be
-        analyzed offline, or be generated externally.</para>
+        analyzed offline, or be generated externally. When <varname>DevicePolicy=</varname> is set to
+        <literal>closed</literal> or <literal>strict</literal>, or set to <literal>auto</literal> and
+        <varname>DeviceAllow=</varname> is set, or <varname>PrivateDevices=</varname> is set, then this
+        setting adds <filename>/dev/tpmrm0</filename> with <constant>rw</constant> mode to
+        <varname>DeviceAllow=</varname>. See
+        <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        for the details about <varname>DevicePolicy=</varname> or <varname>DeviceAllow=</varname>.</para>
 
         <para>The credential files/IPC sockets must be accessible to the service manager, but don't have to
         be directly accessible to the unit's processes: the credential data is read and copied into separate,
@@ -3736,6 +3756,15 @@ StandardInputData=V2XigLJyZSBubyBzdHJhbmdlcnMgdG8gbG92ZQpZb3Uga25vdyB0aGUgcnVsZX
         </varlistentry>
 
         <varlistentry>
+          <term><varname>$REMOTE_ADDR</varname></term>
+          <term><varname>$REMOTE_PORT</varname></term>
+
+          <listitem><para>If this is a unit started via per-connection socket activation (i.e. via a socket
+          unit with <varname>Accept=yes</varname>), these environment variables contain the IP address and
+          port number of the remote peer of the socket connection.</para></listitem>
+        </varlistentry>
+
+        <varlistentry>
           <term><varname>$TRIGGER_UNIT</varname></term>
           <term><varname>$TRIGGER_PATH</varname></term>
           <term><varname>$TRIGGER_TIMER_REALTIME_USEC</varname></term>
@@ -3748,6 +3777,16 @@ StandardInputData=V2XigLJyZSBubyBzdHJhbmdlcnMgdG8gbG92ZQpZb3Uga25vdyB0aGUgcnVsZX
           Because of this, in most cases this variable will be primarily informational, i.e. useful for debugging
           purposes, is lossy, and should not be relied upon to propagate a comprehensive reason for activation.
           </para></listitem>
+        </varlistentry>
+
+        <varlistentry>
+          <term><varname>$MEMORY_PRESSURE_WATCH</varname></term>
+          <term><varname>$MEMORY_PRESSURE_WRITE</varname></term>
+
+          <listitem><para>If memory pressure monitoring is enabled for this service unit, the path to watch
+          and the data to write into it. See <ulink url="https://systemd.io/MEMORY_PRESSURE">Memory Pressure
+          Handling</ulink> for details about these variables and the service protocol data they
+          convey.</para></listitem>
         </varlistentry>
 
       </variablelist>

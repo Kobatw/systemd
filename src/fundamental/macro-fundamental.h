@@ -74,11 +74,11 @@
                 #define assert(expr)
                 #define assert_not_reached() __builtin_unreachable()
         #else
-                #define assert(expr) ({ _likely_(expr) ? VOID_0 : efi_assert(#expr, __FILE__, __LINE__, __PRETTY_FUNCTION__); })
-                #define assert_not_reached() efi_assert("Code should not be reached", __FILE__, __LINE__, __PRETTY_FUNCTION__)
+                #define assert(expr) ({ _likely_(expr) ? VOID_0 : efi_assert(#expr, __FILE__, __LINE__, __func__); })
+                #define assert_not_reached() efi_assert("Code should not be reached", __FILE__, __LINE__, __func__)
         #endif
         #define static_assert _Static_assert
-        #define assert_se(expr) ({ _likely_(expr) ? VOID_0 : efi_assert(#expr, __FILE__, __LINE__, __PRETTY_FUNCTION__); })
+        #define assert_se(expr) ({ _likely_(expr) ? VOID_0 : efi_assert(#expr, __FILE__, __LINE__, __func__); })
 #endif
 
 /* This passes the argument through after (if asserts are enabled) checking that it is not null. */
@@ -298,13 +298,18 @@
 
 /* Takes inspiration from Rust's Option::take() method: reads and returns a pointer, but at the same time
  * resets it to NULL. See: https://doc.rust-lang.org/std/option/enum.Option.html#method.take */
-#define TAKE_PTR(ptr)                           \
-        ({                                      \
-                typeof(ptr) *_pptr_ = &(ptr);   \
-                typeof(ptr) _ptr_ = *_pptr_;    \
-                *_pptr_ = NULL;                 \
-                _ptr_;                          \
+#define TAKE_GENERIC(var, type, nullvalue)                       \
+        ({                                                       \
+                type *_pvar_ = &(var);                           \
+                type _var_ = *_pvar_;                            \
+                type _nullvalue_ = nullvalue;                    \
+                *_pvar_ = _nullvalue_;                           \
+                _var_;                                           \
         })
+#define TAKE_PTR_TYPE(ptr, type) TAKE_GENERIC(ptr, type, NULL)
+#define TAKE_PTR(ptr) TAKE_PTR_TYPE(ptr, typeof(ptr))
+#define TAKE_STRUCT_TYPE(s, type) TAKE_GENERIC(s, type, {})
+#define TAKE_STRUCT(s) TAKE_STRUCT_TYPE(s, typeof(s))
 
 /*
  * STRLEN - return the length of a string literal, minus the trailing NUL byte.
@@ -334,11 +339,8 @@ static inline size_t ALIGN_TO(size_t l, size_t ali) {
 #define ALIGN2_PTR(p) ((void*) ALIGN2((uintptr_t) p))
 #define ALIGN4_PTR(p) ((void*) ALIGN4((uintptr_t) p))
 #define ALIGN8_PTR(p) ((void*) ALIGN8((uintptr_t) p))
-#if !SD_BOOT
-/* libefi also provides ALIGN, and we do not use them in sd-boot explicitly. */
 #define ALIGN(l)  ALIGN_TO(l, sizeof(void*))
 #define ALIGN_PTR(p) ((void*) ALIGN((uintptr_t) (p)))
-#endif
 
 /* Checks if the specified pointer is aligned as appropriate for the specific type */
 #define IS_ALIGNED16(p) (((uintptr_t) p) % __alignof__(uint16_t) == 0)
@@ -371,3 +373,15 @@ static inline size_t ALIGN_TO(size_t l, size_t ali) {
         (v) = UPDATE_FLAG(v, flag, b)
 #define FLAGS_SET(v, flags) \
         ((~(v) & (flags)) == 0)
+
+/* Declare a flexible array usable in a union.
+ * This is essentially a work-around for a pointless constraint in C99
+ * and might go away in some future version of the standard.
+ *
+ * See https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=3080ea5553cc909b000d1f1d964a9041962f2c5b
+ */
+#define DECLARE_FLEX_ARRAY(type, name)                 \
+        struct {                                       \
+                dummy_t __empty__ ## name;             \
+                type name[];                           \
+        }

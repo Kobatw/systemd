@@ -579,9 +579,6 @@ static int parse_token(UdevRules *rules, const char *key, char *attr, UdevRuleOp
         } else if (streq(key, "SYMLINK")) {
                 if (attr)
                         return log_token_invalid_attr(rules, key);
-                if (op == OP_REMOVE)
-                        return log_token_invalid_op(rules, key);
-
                 if (!is_match) {
                         check_value_format_and_warn(rules, key, value, false);
                         r = rule_line_add_token(rule_line, TK_A_DEVLINK, op, value, NULL);
@@ -1181,12 +1178,8 @@ int udev_rules_parse_file(UdevRules *rules, const char *filename) {
         int r;
 
         f = fopen(filename, "re");
-        if (!f) {
-                if (errno == ENOENT)
-                        return 0;
-
+        if (!f)
                 return log_warning_errno(errno, "Failed to open %s, ignoring: %m", filename);
-        }
 
         if (fstat(fileno(f), &st) < 0)
                 return log_warning_errno(errno, "Failed to stat %s, ignoring: %m", filename);
@@ -2313,11 +2306,17 @@ static int udev_rule_apply_token_to_event(
                         if (truncated)
                                 continue;
 
-                        r = device_add_devlink(dev, filename);
-                        if (r < 0)
-                                return log_rule_error_errno(dev, rules, r, "Failed to add devlink '%s': %m", filename);
+                        if (token->op == OP_REMOVE) {
+                                device_remove_devlink(dev, filename);
+                                log_rule_debug(dev, rules, "Dropped SYMLINK '%s'", p);
+                        } else {
+                                r = device_add_devlink(dev, filename);
+                                if (r < 0)
+                                        return log_rule_error_errno(dev, rules, r, "Failed to add devlink '%s': %m", filename);
 
-                        log_rule_debug(dev, rules, "LINK '%s'", p);
+                                log_rule_debug(dev, rules, "Added SYMLINK '%s'", p);
+                        }
+
                         p = next;
                 }
                 break;

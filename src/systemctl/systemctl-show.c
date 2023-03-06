@@ -13,6 +13,7 @@
 #include "errno-util.h"
 #include "exec-util.h"
 #include "exit-status.h"
+#include "fd-util.h"
 #include "format-util.h"
 #include "hexdecoct.h"
 #include "hostname-util.h"
@@ -248,10 +249,15 @@ typedef struct UnitStatusInfo {
         uint64_t memory_current;
         uint64_t memory_min;
         uint64_t memory_low;
+        uint64_t startup_memory_low;
         uint64_t memory_high;
+        uint64_t startup_memory_high;
         uint64_t memory_max;
+        uint64_t startup_memory_max;
         uint64_t memory_swap_max;
+        uint64_t startup_memory_swap_max;
         uint64_t memory_zswap_max;
+        uint64_t startup_memory_zswap_max;
         uint64_t memory_limit;
         uint64_t memory_available;
         uint64_t cpu_usage_nsec;
@@ -264,6 +270,7 @@ typedef struct UnitStatusInfo {
 
         uint64_t default_memory_min;
         uint64_t default_memory_low;
+        uint64_t default_startup_memory_low;
 
         LIST_HEAD(ExecStatusInfo, exec_status_info_list);
 } UnitStatusInfo;
@@ -699,10 +706,12 @@ static void print_status_info(
         if (i->memory_current != UINT64_MAX) {
                 printf("     Memory: %s", FORMAT_BYTES(i->memory_current));
 
-                if (i->memory_min > 0 || i->memory_low > 0 ||
-                    i->memory_high != CGROUP_LIMIT_MAX || i->memory_max != CGROUP_LIMIT_MAX ||
-                    i->memory_swap_max != CGROUP_LIMIT_MAX ||
-                    i->memory_zswap_max != CGROUP_LIMIT_MAX ||
+                if (i->memory_min > 0 ||
+                    i->memory_low > 0 || i->startup_memory_low > 0 ||
+                    i->memory_high != CGROUP_LIMIT_MAX || i->startup_memory_high != CGROUP_LIMIT_MAX ||
+                    i->memory_max != CGROUP_LIMIT_MAX || i->startup_memory_max != CGROUP_LIMIT_MAX ||
+                    i->memory_swap_max != CGROUP_LIMIT_MAX || i->startup_memory_swap_max != CGROUP_LIMIT_MAX ||
+                    i->memory_zswap_max != CGROUP_LIMIT_MAX || i->startup_memory_zswap_max != CGROUP_LIMIT_MAX ||
                     i->memory_available != CGROUP_LIMIT_MAX ||
                     i->memory_limit != CGROUP_LIMIT_MAX) {
                         const char *prefix = "";
@@ -716,20 +725,40 @@ static void print_status_info(
                                 printf("%slow: %s", prefix, FORMAT_BYTES_CGROUP_PROTECTION(i->memory_low));
                                 prefix = " ";
                         }
+                        if (i->startup_memory_low > 0) {
+                                printf("%slow (startup): %s", prefix, FORMAT_BYTES_CGROUP_PROTECTION(i->startup_memory_low));
+                                prefix = " ";
+                        }
                         if (i->memory_high != CGROUP_LIMIT_MAX) {
                                 printf("%shigh: %s", prefix, FORMAT_BYTES(i->memory_high));
+                                prefix = " ";
+                        }
+                        if (i->startup_memory_high != CGROUP_LIMIT_MAX) {
+                                printf("%shigh (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_high));
                                 prefix = " ";
                         }
                         if (i->memory_max != CGROUP_LIMIT_MAX) {
                                 printf("%smax: %s", prefix, FORMAT_BYTES(i->memory_max));
                                 prefix = " ";
                         }
+                        if (i->startup_memory_max != CGROUP_LIMIT_MAX) {
+                                printf("%smax (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_max));
+                                prefix = " ";
+                        }
                         if (i->memory_swap_max != CGROUP_LIMIT_MAX) {
                                 printf("%sswap max: %s", prefix, FORMAT_BYTES(i->memory_swap_max));
                                 prefix = " ";
                         }
+                        if (i->startup_memory_swap_max != CGROUP_LIMIT_MAX) {
+                                printf("%sswap max (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_swap_max));
+                                prefix = " ";
+                        }
                         if (i->memory_zswap_max != CGROUP_LIMIT_MAX) {
                                 printf("%szswap max: %s", prefix, FORMAT_BYTES(i->memory_zswap_max));
+                                prefix = " ";
+                        }
+                        if (i->startup_memory_zswap_max != CGROUP_LIMIT_MAX) {
+                                printf("%szswap max (startup): %s", prefix, FORMAT_BYTES(i->startup_memory_zswap_max));
                                 prefix = " ";
                         }
                         if (i->memory_limit != CGROUP_LIMIT_MAX) {
@@ -953,7 +982,7 @@ static int map_exec(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_e
         if (!info)
                 return -ENOMEM;
 
-        LIST_FIND_TAIL(exec_status_info_list, i->exec_status_info_list, last);
+        last = LIST_FIND_TAIL(exec_status_info_list, i->exec_status_info_list);
 
         while ((r = exec_status_info_deserialize(m, info, is_ex_prop)) > 0) {
 
@@ -1987,12 +2016,18 @@ static int show_one(
                 { "MemoryAvailable",                "t",               NULL,           offsetof(UnitStatusInfo, memory_available)                  },
                 { "DefaultMemoryMin",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_min)                },
                 { "DefaultMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, default_memory_low)                },
+                { "DefaultStartupMemoryLow",        "t",               NULL,           offsetof(UnitStatusInfo, default_startup_memory_low)        },
                 { "MemoryMin",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_min)                        },
                 { "MemoryLow",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_low)                        },
+                { "StartupMemoryLow",               "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_low)                },
                 { "MemoryHigh",                     "t",               NULL,           offsetof(UnitStatusInfo, memory_high)                       },
+                { "StartupMemoryHigh",              "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_high)               },
                 { "MemoryMax",                      "t",               NULL,           offsetof(UnitStatusInfo, memory_max)                        },
+                { "StartupMemoryMax",               "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_max)                },
                 { "MemorySwapMax",                  "t",               NULL,           offsetof(UnitStatusInfo, memory_swap_max)                   },
+                { "StartupMemorySwapMax",           "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_swap_max)           },
                 { "MemoryZSwapMax",                 "t",               NULL,           offsetof(UnitStatusInfo, memory_zswap_max)                  },
+                { "StartupMemoryZSwapMax",          "t",               NULL,           offsetof(UnitStatusInfo, startup_memory_zswap_max)          },
                 { "MemoryLimit",                    "t",               NULL,           offsetof(UnitStatusInfo, memory_limit)                      },
                 { "CPUUsageNSec",                   "t",               NULL,           offsetof(UnitStatusInfo, cpu_usage_nsec)                    },
                 { "TasksCurrent",                   "t",               NULL,           offsetof(UnitStatusInfo, tasks_current)                     },
@@ -2023,6 +2058,7 @@ static int show_one(
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_set_free_ Set *found_properties = NULL;
         _cleanup_(unit_status_info_free) UnitStatusInfo info = {
+                .runtime_max_sec = USEC_INFINITY,
                 .memory_current = UINT64_MAX,
                 .memory_high = CGROUP_LIMIT_MAX,
                 .memory_max = CGROUP_LIMIT_MAX,
@@ -2100,29 +2136,93 @@ static int show_one(
         return 0;
 }
 
-static int get_unit_dbus_path_by_pid(
+static int get_unit_dbus_path_by_pid_fallback(
                 sd_bus *bus,
                 uint32_t pid,
-                char **unit) {
+                char **ret_path,
+                char **ret_unit) {
 
         _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
-        char *u;
+        _cleanup_free_ char *path = NULL, *unit = NULL;
+        char *p;
         int r;
+
+        assert(bus);
+        assert(ret_path);
+        assert(ret_unit);
 
         r = bus_call_method(bus, bus_systemd_mgr, "GetUnitByPID", &error, &reply, "u", pid);
         if (r < 0)
                 return log_error_errno(r, "Failed to get unit for PID %"PRIu32": %s", pid, bus_error_message(&error, r));
 
-        r = sd_bus_message_read(reply, "o", &u);
+        r = sd_bus_message_read(reply, "o", &p);
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        u = strdup(u);
-        if (!u)
+        path = strdup(p);
+        if (!path)
                 return log_oom();
 
-        *unit = u;
+        r = unit_name_from_dbus_path(path, &unit);
+        if (r < 0)
+                return log_oom();
+
+        *ret_unit = TAKE_PTR(unit);
+        *ret_path = TAKE_PTR(path);
+
+        return 0;
+}
+
+static int get_unit_dbus_path_by_pid(
+                sd_bus *bus,
+                uint32_t pid,
+                char **ret_path,
+                char **ret_unit) {
+
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_free_ char *path = NULL, *unit = NULL;
+        _cleanup_close_ int pidfd = -EBADF;
+        char *p, *u;
+        int r;
+
+        assert(bus);
+        assert(ret_path);
+        assert(ret_unit);
+
+        /* First, try to send a PIDFD across the wire, so that we can pin the process and there's no race
+         * condition possible while we wait for the D-Bus reply. If we either don't have PIDFD support in
+         * the kernel or the new D-Bus method is not available, then fallback to the older method that
+         * sends the numeric PID. */
+
+        pidfd = pidfd_open(pid, 0);
+        if (pidfd < 0 && ERRNO_IS_NOT_SUPPORTED(errno))
+                return get_unit_dbus_path_by_pid_fallback(bus, pid, ret_path, ret_unit);
+        if (pidfd < 0)
+                return log_error_errno(errno, "Failed to open PID %"PRIu32": %m", pid);
+
+        r = bus_call_method(bus, bus_systemd_mgr, "GetUnitByPIDFD", &error, &reply, "h", pidfd);
+        if (r < 0 && sd_bus_error_has_name(&error, SD_BUS_ERROR_UNKNOWN_METHOD))
+                return get_unit_dbus_path_by_pid_fallback(bus, pid, ret_path, ret_unit);
+        if (r < 0)
+                return log_error_errno(r, "Failed to get unit for PID %"PRIu32": %s", pid, bus_error_message(&error, r));
+
+        r = sd_bus_message_read(reply, "os", &p, &u);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        path = strdup(p);
+        if (!path)
+                return log_oom();
+
+        unit = strdup(u);
+        if (!unit)
+                return log_oom();
+
+        *ret_unit = TAKE_PTR(unit);
+        *ret_path = TAKE_PTR(path);
+
         return 0;
 }
 
@@ -2297,15 +2397,11 @@ int verb_show(int argc, char *argv[], void *userdata) {
 
                         } else {
                                 /* Interpret as PID */
-                                r = get_unit_dbus_path_by_pid(bus, id, &path);
+                                r = get_unit_dbus_path_by_pid(bus, id, &path, &unit);
                                 if (r < 0) {
                                         ret = r;
                                         continue;
                                 }
-
-                                r = unit_name_from_dbus_path(path, &unit);
-                                if (r < 0)
-                                        return log_oom();
                         }
 
                         r = show_one(bus, path, unit, show_mode, &new_line, &ellipsized);

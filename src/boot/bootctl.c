@@ -2,6 +2,7 @@
 
 #include <getopt.h>
 
+#include "blockdev-util.h"
 #include "bootctl.h"
 #include "bootctl-install.h"
 #include "bootctl-random-seed.h"
@@ -9,7 +10,9 @@
 #include "bootctl-set-efivar.h"
 #include "bootctl-status.h"
 #include "bootctl-systemd-efi-options.h"
+#include "bootctl-uki.h"
 #include "build.h"
+#include "devnum-util.h"
 #include "dissect-image.h"
 #include "escape.h"
 #include "find-esp.h"
@@ -32,6 +35,7 @@ char *arg_esp_path = NULL;
 char *arg_xbootldr_path = NULL;
 bool arg_print_esp_path = false;
 bool arg_print_dollar_boot_path = false;
+unsigned arg_print_root_device = 0;
 bool arg_touch_variables = true;
 PagerFlags arg_pager_flags = 0;
 bool arg_graceful = false;
@@ -47,6 +51,7 @@ char *arg_root = NULL;
 char *arg_image = NULL;
 InstallSource arg_install_source = ARG_INSTALL_SOURCE_AUTO;
 char *arg_efi_boot_option_description = NULL;
+bool arg_dry_run = false;
 
 STATIC_DESTRUCTOR_REGISTER(arg_esp_path, freep);
 STATIC_DESTRUCTOR_REGISTER(arg_xbootldr_path, freep);
@@ -129,27 +134,33 @@ static int help(int argc, char *argv[], void *userdata) {
         if (r < 0)
                 return log_oom();
 
-        printf("%1$s  [OPTIONS...] COMMAND ...\n"
+        printf("%1$s [OPTIONS...] COMMAND ...\n"
                "\n%5$sControl EFI firmware boot settings and manage boot loader.%6$s\n"
                "\n%3$sGeneric EFI Firmware/Boot Loader Commands:%4$s\n"
-               "  status              Show status of installed boot loader and EFI variables\n"
+               "  status               Show status of installed boot loader and EFI variables\n"
                "  reboot-to-firmware [BOOL]\n"
-               "                      Query or set reboot-to-firmware EFI flag\n"
+               "                       Query or set reboot-to-firmware EFI flag\n"
                "  systemd-efi-options [STRING]\n"
-               "                      Query or set system options string in EFI variable\n"
+               "                       Query or set system options string in EFI variable\n"
                "\n%3$sBoot Loader Specification Commands:%4$s\n"
-               "  list                List boot loader entries\n"
-               "  set-default ID      Set default boot loader entry\n"
-               "  set-oneshot ID      Set default boot loader entry, for next boot only\n"
-               "  set-timeout SECONDS Set the menu timeout\n"
+               "  list                 List boot loader entries\n"
+               "  unlink ID            Remove boot loader entry\n"
+               "  cleanup              Remove files in ESP not referenced in any boot entry\n"
+               "\n%3$sBoot Loader Interface Commands:%4$s\n"
+               "  set-default ID       Set default boot loader entry\n"
+               "  set-oneshot ID       Set default boot loader entry, for next boot only\n"
+               "  set-timeout SECONDS  Set the menu timeout\n"
                "  set-timeout-oneshot SECONDS\n"
-               "                      Set the menu timeout for the next boot only\n"
+               "                       Set the menu timeout for the next boot only\n"
                "\n%3$ssystemd-boot Commands:%4$s\n"
-               "  install             Install systemd-boot to the ESP and EFI variables\n"
-               "  update              Update systemd-boot in the ESP and EFI variables\n"
-               "  remove              Remove systemd-boot from the ESP and EFI variables\n"
-               "  is-installed        Test whether systemd-boot is installed in the ESP\n"
-               "  random-seed         Initialize random seed in ESP and EFI variables\n"
+               "  install              Install systemd-boot to the ESP and EFI variables\n"
+               "  update               Update systemd-boot in the ESP and EFI variables\n"
+               "  remove               Remove systemd-boot from the ESP and EFI variables\n"
+               "  is-installed         Test whether systemd-boot is installed in the ESP\n"
+               "  random-seed          Initialize random seed in ESP and EFI variables\n"
+               "\n%3$sKernel Image Commands:%4$s\n"
+               "  kernel-identify      Identify kernel image type\n"
+               "  kernel-inspect       Prints details about the kernel image\n"
                "\n%3$sOptions:%4$s\n"
                "  -h --help            Show this help\n"
                "     --version         Print version\n"
@@ -159,8 +170,10 @@ static int help(int argc, char *argv[], void *userdata) {
                "     --image=PATH      Operate on disk image as filesystem root\n"
                "     --install-source=auto|image|host\n"
                "                       Where to pick files when using --root=/--image=\n"
-               "  -p --print-esp-path  Print path to the EFI System Partition\n"
-               "  -x --print-boot-path Print path to the $BOOT partition\n"
+               "  -p --print-esp-path  Print path to the EFI System Partition mount point\n"
+               "  -x --print-boot-path Print path to the $BOOT partition mount point\n"
+               "  -R --print-root-device\n"
+               "                       Print path to the root device node\n"
                "     --no-variables    Don't touch EFI variables\n"
                "     --no-pager        Do not pipe output into a pager\n"
                "     --graceful        Don't fail when the ESP cannot be found or EFI\n"
@@ -176,6 +189,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "                       Install all supported EFI architectures\n"
                "     --efi-boot-option-description=DESCRIPTION\n"
                "                       Description of the entry in the boot option list\n"
+               "     --dry-run         Dry run (unlink and cleanup)\n"
                "\nSee the %2$s for details.\n",
                program_invocation_short_name,
                link,
@@ -203,6 +217,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_JSON,
                 ARG_ARCH_ALL,
                 ARG_EFI_BOOT_OPTION_DESCRIPTION,
+                ARG_DRY_RUN,
         };
 
         static const struct option options[] = {
@@ -217,6 +232,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "print-esp-path",              no_argument,       NULL, 'p'                             },
                 { "print-path",                  no_argument,       NULL, 'p'                             }, /* Compatibility alias */
                 { "print-boot-path",             no_argument,       NULL, 'x'                             },
+                { "print-root-device",           no_argument,       NULL, 'R'                             },
                 { "no-variables",                no_argument,       NULL, ARG_NO_VARIABLES                },
                 { "no-pager",                    no_argument,       NULL, ARG_NO_PAGER                    },
                 { "graceful",                    no_argument,       NULL, ARG_GRACEFUL                    },
@@ -227,6 +243,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "json",                        required_argument, NULL, ARG_JSON                        },
                 { "all-architectures",           no_argument,       NULL, ARG_ARCH_ALL                    },
                 { "efi-boot-option-description", required_argument, NULL, ARG_EFI_BOOT_OPTION_DESCRIPTION },
+                { "dry-run",                     no_argument,       NULL, ARG_DRY_RUN                     },
                 {}
         };
 
@@ -236,7 +253,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hpx", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "hpxR", options, NULL)) >= 0)
                 switch (c) {
 
                 case 'h':
@@ -284,17 +301,15 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case 'p':
-                        if (arg_print_dollar_boot_path)
-                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "--print-boot-path/-x cannot be combined with --print-esp-path/-p");
                         arg_print_esp_path = true;
                         break;
 
                 case 'x':
-                        if (arg_print_esp_path)
-                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "--print-boot-path/-x cannot be combined with --print-esp-path/-p");
                         arg_print_dollar_boot_path = true;
+                        break;
+
+                case 'R':
+                        arg_print_root_device ++;
                         break;
 
                 case ARG_NO_VARIABLES:
@@ -376,6 +391,10 @@ static int parse_argv(int argc, char *argv[]) {
                                 return r;
                         break;
 
+                case ARG_DRY_RUN:
+                        arg_dry_run = true;
+                        break;
+
                 case '?':
                         return -EINVAL;
 
@@ -383,8 +402,12 @@ static int parse_argv(int argc, char *argv[]) {
                         assert_not_reached();
                 }
 
+        if (!!arg_print_esp_path + !!arg_print_dollar_boot_path + (arg_print_root_device > 0) > 1)
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "--print-esp-path/-p, --print-boot-path/-x, --print-root-device=/-R cannot be combined.");
+
         if ((arg_root || arg_image) && argv[optind] && !STR_IN_SET(argv[optind], "status", "list",
-                        "install", "update", "remove", "is-installed", "random-seed"))
+                        "install", "update", "remove", "is-installed", "random-seed", "unlink", "cleanup"))
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
                                        "Options --root= and --image= are not supported with verb %s.",
                                        argv[optind]);
@@ -394,6 +417,9 @@ static int parse_argv(int argc, char *argv[]) {
 
         if (arg_install_source != ARG_INSTALL_SOURCE_AUTO && !arg_root && !arg_image)
                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "--install-from-host is only supported with --root= or --image=.");
+
+        if (arg_dry_run && argv[optind] && !STR_IN_SET(argv[optind], "unlink", "cleanup"))
+                return log_error_errno(SYNTHETIC_ERRNO(EINVAL), "--dry is only supported with --unlink or --cleanup");
 
         return 1;
 }
@@ -406,7 +432,11 @@ static int bootctl_main(int argc, char *argv[]) {
                 { "update",              VERB_ANY, 1,        0,            verb_install             },
                 { "remove",              VERB_ANY, 1,        0,            verb_remove              },
                 { "is-installed",        VERB_ANY, 1,        0,            verb_is_installed        },
+                { "kernel-identify",     2,        2,        0,            verb_kernel_identify     },
+                { "kernel-inspect",      2,        2,        0,            verb_kernel_inspect      },
                 { "list",                VERB_ANY, 1,        0,            verb_list                },
+                { "unlink",              2,        2,        0,            verb_unlink              },
+                { "cleanup",             VERB_ANY, 1,        0,            verb_list                },
                 { "set-default",         2,        2,        0,            verb_set_efivar          },
                 { "set-oneshot",         2,        2,        0,            verb_set_efivar          },
                 { "set-timeout",         2,        2,        0,            verb_set_efivar          },
@@ -436,6 +466,32 @@ static int run(int argc, char *argv[]) {
         if (r <= 0)
                 return r;
 
+        if (arg_print_root_device > 0) {
+                _cleanup_free_ char *path = NULL;
+                dev_t devno;
+
+                r = blockdev_get_root(LOG_ERR, &devno);
+                if (r < 0)
+                        return r;
+                if (r == 0) {
+                        log_error("Root file system not backed by a (single) whole block device.");
+                        return 80; /* some recognizable error code */
+                }
+
+                if (arg_print_root_device > 1) {
+                        r = block_get_whole_disk(devno, &devno);
+                        if (r < 0)
+                                log_debug_errno(r, "Unable to find whole block device for root block device, ignoring: %m");
+                }
+
+                r = device_path_make_canonical(S_IFBLK, devno, &path);
+                if (r < 0)
+                        return log_oom();
+
+                puts(path);
+                return EXIT_SUCCESS;
+        }
+
         /* Open up and mount the image */
         if (arg_image) {
                 assert(!arg_root);
@@ -445,6 +501,7 @@ static int run(int argc, char *argv[]) {
                                 DISSECT_IMAGE_GENERIC_ROOT |
                                 DISSECT_IMAGE_RELAX_VAR_CHECK,
                                 &unlink_dir,
+                                /* ret_dir_fd= */ NULL,
                                 &loop_device);
                 if (r < 0)
                         return r;

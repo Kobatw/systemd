@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1+
+# SPDX-License-Identifier: LGPL-2.1-or-later
 
 if conf.get('BPF_FRAMEWORK') != 1
         subdir_done()
@@ -7,6 +7,7 @@ endif
 bpf_clang_flags = [
         '-std=gnu11',
         '-Wno-compare-distinct-pointer-types',
+        '-fno-stack-protector',
         '-O2',
         '-target',
         'bpf',
@@ -16,6 +17,7 @@ bpf_clang_flags = [
 
 bpf_gcc_flags = [
         '-std=gnu11',
+        '-fno-stack-protector',
         '-O2',
         '-mkernel=5.2',
         '-mcpu=v3',

@@ -504,7 +504,7 @@ int read_virtual_file_fd(int fd, size_t max_size, char **ret_contents, size_t *r
                  * at least one more byte to be able to distinguish EOF from truncation. */
                 if (max_size != SIZE_MAX && n > max_size) {
                         n = size; /* Make sure we never use more than what we sized the buffer for (so that
-                                   * we have one free byte in it for the trailing NUL we add below).*/
+                                   * we have one free byte in it for the trailing NUL we add below). */
                         truncated = true;
                         break;
                 }
@@ -862,7 +862,6 @@ int executable_is_script(const char *path, char **interpreter) {
 int get_proc_field(const char *filename, const char *pattern, const char *terminator, char **field) {
         _cleanup_free_ char *status = NULL;
         char *t, *f;
-        size_t len;
         int r;
 
         assert(terminator);
@@ -914,9 +913,7 @@ int get_proc_field(const char *filename, const char *pattern, const char *termin
                         t--;
         }
 
-        len = strcspn(t, terminator);
-
-        f = strndup(t, len);
+        f = strdupcspn(t, terminator);
         if (!f)
                 return -ENOMEM;
 

@@ -2,7 +2,6 @@
 
 systemd_localed_sources = files(
         'localed-util.c',
-        'localed-util.h',
         'localed.c',
 )
 
@@ -30,7 +29,10 @@ if conf.get('ENABLE_LOCALED') == 1
 endif
 
 tests += [
-        [files('test-localed-util.c',
-               'localed-util.c',
-               'localed-util.h')],
+        {
+                'sources' : files(
+                        'test-localed-util.c',
+                        'localed-util.c',
+                ),
+        },
 ]

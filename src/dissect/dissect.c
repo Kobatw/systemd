@@ -601,8 +601,15 @@ static int action_dissect(DissectedImage *m, LoopDevice *d) {
         else if (arg_json_format_flags & JSON_FORMAT_OFF)
                 printf("      Size: %s\n", FORMAT_BYTES(size));
 
+        printf(" Sec. Size: %" PRIu32 "\n", m->sector_size);
+
+        printf("     Arch.: %s\n",
+               strna(architecture_to_string(dissected_image_architecture(m))));
+
         if (arg_json_format_flags & JSON_FORMAT_OFF)
                 putc('\n', stdout);
+
+        fflush(stdout);
 
         r = dissected_image_acquire_metadata(m, 0);
         if (r == -ENXIO)
@@ -704,6 +711,7 @@ static int action_dissect(DissectedImage *m, LoopDevice *d) {
                                                JSON_BUILD_PAIR("name", JSON_BUILD_STRING(bn)),
                                                JSON_BUILD_PAIR_CONDITION(!sd_id128_is_null(m->image_uuid), "imageUuid", JSON_BUILD_UUID(m->image_uuid)),
                                                JSON_BUILD_PAIR("size", JSON_BUILD_INTEGER(size)),
+                                               JSON_BUILD_PAIR("sectorSize", JSON_BUILD_INTEGER(m->sector_size)),
                                                JSON_BUILD_PAIR_CONDITION(m->hostname, "hostname", JSON_BUILD_STRING(m->hostname)),
                                                JSON_BUILD_PAIR_CONDITION(!sd_id128_is_null(m->machine_id), "machineId", JSON_BUILD_ID128(m->machine_id)),
                                                JSON_BUILD_PAIR_CONDITION(mi, "machineInfo", JSON_BUILD_VARIANT(mi)),
@@ -1100,7 +1108,7 @@ static int action_list_or_mtree_or_copy(DissectedImage *m, LoopDevice *d) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy bytes from %s in mage '%s' to '%s': %m", arg_source, arg_image, arg_target);
 
-                (void) copy_xattr(source_fd, target_fd, 0);
+                (void) copy_xattr(source_fd, NULL, target_fd, NULL, 0);
                 (void) copy_access(source_fd, target_fd);
                 (void) copy_times(source_fd, target_fd, 0);
 
@@ -1177,7 +1185,7 @@ static int action_list_or_mtree_or_copy(DissectedImage *m, LoopDevice *d) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to copy bytes from '%s' to '%s' in image '%s': %m", arg_source, arg_target, arg_image);
 
-                (void) copy_xattr(source_fd, target_fd, 0);
+                (void) copy_xattr(source_fd, NULL, target_fd, NULL, 0);
                 (void) copy_access(source_fd, target_fd);
                 (void) copy_times(source_fd, target_fd, 0);
 
@@ -1253,7 +1261,7 @@ static int action_umount(const char *path) {
         if (r < 0)
                 return log_error_errno(r, "Failed to unmount '%s': %m", canonical);
 
-        /* We managed to lock and unmount successfully? That means we can try to remove the loop device.*/
+        /* We managed to lock and unmount successfully? That means we can try to remove the loop device. */
         loop_device_unrelinquish(d);
 
         if (arg_rmdir) {
@@ -1437,9 +1445,9 @@ static int run(int argc, char *argv[]) {
         loop_flags = FLAGS_SET(arg_flags, DISSECT_IMAGE_NO_PARTITION_TABLE) ? 0 : LO_FLAGS_PARTSCAN;
 
         if (arg_in_memory)
-                r = loop_device_make_by_path_memory(arg_image, open_flags, loop_flags, LOCK_SH, &d);
+                r = loop_device_make_by_path_memory(arg_image, open_flags, /* sector_size= */ UINT32_MAX, loop_flags, LOCK_SH, &d);
         else
-                r = loop_device_make_by_path(arg_image, open_flags, loop_flags, LOCK_SH, &d);
+                r = loop_device_make_by_path(arg_image, open_flags, /* sector_size= */ UINT32_MAX, loop_flags, LOCK_SH, &d);
         if (r < 0)
                 return log_error_errno(r, "Failed to set up loopback device for %s: %m", arg_image);
 

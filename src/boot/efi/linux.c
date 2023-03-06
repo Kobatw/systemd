@@ -8,12 +8,11 @@
  * This method works for Linux 5.8 and newer on ARM/Aarch64, x86/x68_64 and RISC-V.
  */
 
-#include <efi.h>
-#include <efilib.h>
-
 #include "initrd.h"
 #include "linux.h"
 #include "pe.h"
+#include "proto/device-path.h"
+#include "proto/loaded-image.h"
 #include "secure-boot.h"
 #include "util.h"
 
@@ -57,14 +56,14 @@ static EFI_STATUS load_image(EFI_HANDLE parent, const void *source, size_t len, 
                         .Header = {
                                 .Type = MEDIA_DEVICE_PATH,
                                 .SubType = MEDIA_VENDOR_DP,
-                                .Length = { sizeof(payload_device_path.payload), 0 },
+                                .Length = sizeof(payload_device_path.payload),
                         },
                         .Guid = STUB_PAYLOAD_GUID,
                 },
                 .end = {
                         .Type = END_DEVICE_PATH_TYPE,
                         .SubType = END_ENTIRE_DEVICE_PATH_SUBTYPE,
-                        .Length = { sizeof(payload_device_path.end), 0 },
+                        .Length = sizeof(payload_device_path.end),
                 },
         };
 
@@ -120,17 +119,18 @@ EFI_STATUS linux_exec(
                                 initrd_length);
 #endif
         if (err != EFI_SUCCESS)
-                return log_error_status_stall(err, u"Bad kernel image: %r", err);
+                return log_error_status(err, "Bad kernel image: %m");
 
         _cleanup_(unload_imagep) EFI_HANDLE kernel_image = NULL;
         err = load_image(parent, linux_buffer, linux_length, &kernel_image);
         if (err != EFI_SUCCESS)
-                return log_error_status_stall(err, u"Error loading kernel image: %r", err);
+                return log_error_status(err, "Error loading kernel image: %m");
 
         EFI_LOADED_IMAGE_PROTOCOL *loaded_image;
-        err = BS->HandleProtocol(kernel_image, &LoadedImageProtocol, (void **) &loaded_image);
+        err = BS->HandleProtocol(
+                        kernel_image, MAKE_GUID_PTR(EFI_LOADED_IMAGE_PROTOCOL), (void **) &loaded_image);
         if (err != EFI_SUCCESS)
-                return log_error_status_stall(err, u"Error getting kernel loaded image protocol: %r", err);
+                return log_error_status(err, "Error getting kernel loaded image protocol: %m");
 
         if (cmdline) {
                 loaded_image->LoadOptions = (void *) cmdline;
@@ -140,8 +140,9 @@ EFI_STATUS linux_exec(
         _cleanup_(cleanup_initrd) EFI_HANDLE initrd_handle = NULL;
         err = initrd_register(initrd_buffer, initrd_length, &initrd_handle);
         if (err != EFI_SUCCESS)
-                return log_error_status_stall(err, u"Error registering initrd: %r", err);
+                return log_error_status(err, "Error registering initrd: %m");
 
+        log_wait();
         err = BS->StartImage(kernel_image, NULL, NULL);
 
         /* Try calling the kernel compat entry point if one exists. */
@@ -151,5 +152,5 @@ EFI_STATUS linux_exec(
                 err = compat_entry(kernel_image, ST);
         }
 
-        return log_error_status_stall(err, u"Error starting kernel image: %r", err);
+        return log_error_status(err, "Error starting kernel image: %m");
 }

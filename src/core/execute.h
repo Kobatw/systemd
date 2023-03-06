@@ -301,11 +301,11 @@ struct ExecContext {
         ProtectProc protect_proc;  /* hidepid= */
         ProcSubset proc_subset;    /* subset= */
 
+        int private_mounts;
         bool private_tmp;
         bool private_network;
         bool private_devices;
         bool private_users;
-        bool private_mounts;
         bool private_ipc;
         bool protect_kernel_tunables;
         bool protect_kernel_modules;
@@ -441,6 +441,7 @@ int exec_spawn(Unit *unit,
                const ExecParameters *exec_params,
                ExecRuntime *runtime,
                DynamicCreds *dynamic_creds,
+               const CGroupContext *cgroup_context,
                pid_t *ret);
 
 void exec_command_done_array(ExecCommand *c, size_t n);
@@ -459,6 +460,7 @@ void exec_context_dump(const ExecContext *c, FILE* f, const char *prefix);
 
 int exec_context_destroy_runtime_directory(const ExecContext *c, const char *runtime_root);
 int exec_context_destroy_credentials(const ExecContext *c, const char *runtime_root, const char *unit);
+int exec_context_destroy_mount_ns_dir(Unit *u);
 
 const char* exec_context_fdname(const ExecContext *c, int fd_index);
 
@@ -530,3 +532,4 @@ const char* exec_resource_type_to_string(ExecDirectoryType i) _const_;
 ExecDirectoryType exec_resource_type_from_string(const char *s) _pure_;
 
 bool exec_needs_mount_namespace(const ExecContext *context, const ExecParameters *params, const ExecRuntime *runtime);
+bool exec_needs_network_namespace(const ExecContext *context);

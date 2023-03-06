@@ -252,6 +252,7 @@
 
       <varlistentry>
         <term><varname>MemoryMin=<replaceable>bytes</replaceable></varname>, <varname>MemoryLow=<replaceable>bytes</replaceable></varname></term>
+        <term><varname>StartupMemoryLow=<replaceable>bytes</replaceable></varname>, <varname>DefaultStartupMemoryLow=<replaceable>bytes</replaceable></varname></term>
 
         <listitem>
           <para>Specify the memory usage protection of the executed processes in this unit.
@@ -279,16 +280,23 @@
           <para>Units may have their children use a default <literal>memory.min</literal> or
           <literal>memory.low</literal> value by specifying <varname>DefaultMemoryMin=</varname> or
           <varname>DefaultMemoryLow=</varname>, which has the same semantics as
-          <varname>MemoryMin=</varname> and <varname>MemoryLow=</varname>.
+          <varname>MemoryMin=</varname> and <varname>MemoryLow=</varname>, or <varname>DefaultStartupMemoryLow=</varname>
+          which has the same semantics as <varname>StartupMemoryLow=</varname>.
           This setting does not affect <literal>memory.min</literal> or <literal>memory.low</literal>
           in the unit itself.
           Using it to set a default child allocation is only useful on kernels older than 5.7,
           which do not support the <literal>memory_recursiveprot</literal> cgroup2 mount option.</para>
+
+          <para>While <varname>StartupMemoryLow=</varname> applies to the startup and shutdown phases of the system,
+          <varname>MemoryMin=</varname> applies to normal runtime of the system, and if the former is not set also to
+          the startup and shutdown phases. Using <varname>StartupMemoryLow=</varname> allows prioritizing specific services at
+          boot-up and shutdown differently than during normal runtime.</para>
         </listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>MemoryHigh=<replaceable>bytes</replaceable></varname></term>
+        <term><varname>StartupMemoryHigh=<replaceable>bytes</replaceable></varname></term>
 
         <listitem>
           <para>Specify the throttling limit on memory usage of the executed processes in this unit. Memory usage may go
@@ -302,11 +310,17 @@
           special value <literal>infinity</literal>, no memory throttling is applied. This controls the
           <literal>memory.high</literal> control group attribute. For details about this control group attribute, see
           <ulink url="https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files">Memory Interface Files</ulink>.</para>
+
+          <para>While <varname>StartupMemoryHigh=</varname> applies to the startup and shutdown phases of the system,
+          <varname>MemoryHigh=</varname> applies to normal runtime of the system, and if the former is not set also to
+          the startup and shutdown phases. Using <varname>StartupMemoryHigh=</varname> allows prioritizing specific services at
+          boot-up and shutdown differently than during normal runtime.</para>
         </listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>MemoryMax=<replaceable>bytes</replaceable></varname></term>
+        <term><varname>StartupMemoryMax=<replaceable>bytes</replaceable></varname></term>
 
         <listitem>
           <para>Specify the absolute limit on memory usage of the executed processes in this unit. If memory usage
@@ -320,11 +334,17 @@
           assigned the special value <literal>infinity</literal>, no memory limit is applied. This controls the
           <literal>memory.max</literal> control group attribute. For details about this control group attribute, see
           <ulink url="https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files">Memory Interface Files</ulink>.</para>
+
+          <para>While <varname>StartupMemoryMax=</varname> applies to the startup and shutdown phases of the system,
+          <varname>MemoryMax=</varname> applies to normal runtime of the system, and if the former is not set also to
+          the startup and shutdown phases. Using <varname>StartupMemoryMax=</varname> allows prioritizing specific services at
+          boot-up and shutdown differently than during normal runtime.</para>
         </listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>MemorySwapMax=<replaceable>bytes</replaceable></varname></term>
+        <term><varname>StartupMemorySwapMax=<replaceable>bytes</replaceable></varname></term>
 
         <listitem>
           <para>Specify the absolute limit on swap usage of the executed processes in this unit.</para>
@@ -334,11 +354,17 @@
           special value <literal>infinity</literal>, no swap limit is applied. These settings control the
           <literal>memory.swap.max</literal> control group attribute. For details about this control group attribute,
           see <ulink url="https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files">Memory Interface Files</ulink>.</para>
+
+          <para>While <varname>StartupMemorySwapMax=</varname> applies to the startup and shutdown phases of the system,
+          <varname>MemorySwapMax=</varname> applies to normal runtime of the system, and if the former is not set also to
+          the startup and shutdown phases. Using <varname>StartupMemorySwapMax=</varname> allows prioritizing specific services at
+          boot-up and shutdown differently than during normal runtime.</para>
         </listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>MemoryZSwapMax=<replaceable>bytes</replaceable></varname></term>
+        <term><varname>StartupMemoryZSwapMax=<replaceable>bytes</replaceable></varname></term>
 
         <listitem>
           <para>Specify the absolute limit on zswap usage of the processes in this unit. Zswap is a lightweight compressed
@@ -352,6 +378,11 @@
           special value <literal>infinity</literal>, no limit is applied. These settings control the
           <literal>memory.zswap.max</literal> control group attribute. For details about this control group attribute,
           see <ulink url="https://docs.kernel.org/admin-guide/cgroup-v2.html#memory-interface-files">Memory Interface Files</ulink>.</para>
+
+          <para>While <varname>StartupMemoryZSwapMax=</varname> applies to the startup and shutdown phases of the system,
+          <varname>MemoryZSwapMax=</varname> applies to normal runtime of the system, and if the former is not set also to
+          the startup and shutdown phases. Using <varname>StartupMemoryZSwapMax=</varname> allows prioritizing specific services at
+          boot-up and shutdown differently than during normal runtime.</para>
         </listitem>
       </varlistentry>
 
@@ -638,6 +669,8 @@
           support is not enabled in the underlying kernel or container manager). These settings will have no effect in
           that case. If compatibility with such systems is desired it is hence recommended to not exclusively rely on
           them for IP security.</para>
+
+          <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/>
         </listitem>
       </varlistentry>
 
@@ -814,6 +847,8 @@ SocketBindDeny=any
 SocketBindAllow=ipv4:udp:10000-65535
 SocketBindDeny=any
 …</programlisting></para>
+
+          <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/>
         </listitem>
       </varlistentry>
 
@@ -860,6 +895,8 @@ RestrictNetworkInterfaces=eth1 eth2
 RestrictNetworkInterfaces=~eth1</programlisting>
           Programs in the unit will be only able to use the eth2 network interface.
           </para>
+
+          <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/>
         </listitem>
       </varlistentry>
 
@@ -912,6 +949,7 @@ DeviceAllow=block-loop
 DeviceAllow=/dev/loop-control
 …</programlisting></para>
 
+          <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/>
         </listitem>
       </varlistentry>
 
@@ -956,6 +994,8 @@ DeviceAllow=/dev/loop-control
               </listitem>
             </varlistentry>
           </variablelist>
+
+          <xi:include href="cgroup-sandboxing.xml" xpointer="singular"/>
         </listitem>
       </varlistentry>
 
@@ -1128,6 +1168,53 @@ DeviceAllow=/dev/loop-control
           and <citerefentry><refentrytitle>oomd.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
           </para>
         </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>MemoryPressureWatch=</varname></term>
+
+        <listitem><para>Controls memory pressure monitoring for invoked processes. Takes one of
+        <literal>off</literal>, <literal>on</literal>, <literal>auto</literal> or <literal>skip</literal>. If
+        <literal>off</literal> tells the service not to watch for memory pressure events, by setting the
+        <varname>$MEMORY_PRESSURE_WATCH</varname> environment variable to the literal string
+        <filename>/dev/null</filename>. If <literal>on</literal> tells the service to watch for memory
+        pressure events. This enables memory accounting for the service, and ensures the
+        <filename>memory.pressure</filename> cgroup attribute files is accessible for read and write to the
+        service's user. It then sets the <varname>$MEMORY_PRESSURE_WATCH</varname> environment variable for
+        processes invoked by the unit to the file system path to this file. The threshold information
+        configured with <varname>MemoryPressureThresholdSec=</varname> is encoded in the
+        <varname>$MEMORY_PRESSURE_WRITE</varname> environment variable. If the <literal>auto</literal> value
+        is set the protocol is enabled if memory accounting is anyway enabled for the unit, and disabled
+        otherwise. If set to <literal>skip</literal> the logic is neither enabled, nor disabled and the two
+        environment variables are not set.</para>
+
+        <para>Note that services are free to use the two environment variables, but it's unproblematic if
+        they ignore them. Memory pressure handling must be implemented individually in each service, and
+        usually means different things for different software. For further details on memory pressure
+        handling see <ulink url="https://systemd.io/MEMORY_PRESSURE">Memory Pressure Handling in
+        systemd</ulink>.</para>
+
+        <para>Services implemented using
+        <citerefentry><refentrytitle>sd-event</refentrytitle><manvolnum>3</manvolnum></citerefentry> may use
+        <citerefentry><refentrytitle>sd_event_add_memory_pressure</refentrytitle><manvolnum>3</manvolnum></citerefentry>
+        to watch for and handle memory pressure events.</para>
+
+        <para>If not explicit set, defaults to the <varname>DefaultMemoryPressureWatch=</varname> setting in
+        <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>MemoryPressureThresholdSec=</varname></term>
+
+        <listitem><para>Sets the memory pressure threshold time for memory pressure monitor as configured via
+        <varname>MemoryPressureWatch=</varname>. Specifies the maximum allocation latency before a memory
+        pressure event is signalled to the service, per 1s window. If not specified defaults to the
+        <varname>DefaultMemoryPressureThresholdSec=</varname> setting in
+        <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+        (which in turn defaults to 100ms). The specified value expects a time unit such as
+        <literal>ms</literal> or <literal>µs</literal>, see
+        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry> for
+        details on the permitted syntax.</para></listitem>
       </varlistentry>
     </variablelist>
   </refsect1>

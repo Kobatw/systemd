@@ -89,6 +89,8 @@ check_device_unit() {(
     path="${2?}"
     unit=$(systemd-escape --path --suffix=device "$path")
 
+    [[ "$log_level" == 1 ]] && echo "INFO: check_device_unit($unit)"
+
     syspath=$(systemctl show --value --property SysFSPath "$unit" 2>/dev/null)
     if [[ -z "$syspath" ]]; then
         [[ "$log_level" == 1 ]] && echo >&2 "ERROR: $unit not found."
@@ -156,12 +158,11 @@ helper_check_device_units() {(
 
     local i
 
-    for ((i = 0; i < 20; i++)); do
-        (( i == 0 )) || sleep .5
-
+    for (( i = 0; i < 20; i++ )); do
         if check_device_units 0 "$@"; then
             return 0
         fi
+        sleep .5
     done
 
     check_device_units 1 "$@"
@@ -301,7 +302,7 @@ EOF
     rm -fr "$mpoint"
 }
 
-testcase_simultaneous_events() {
+testcase_simultaneous_events_1() {
     local disk expected i iterations key link num_part part partscript rule target timeout
     local -a devices symlinks
     local -A running
@@ -394,6 +395,73 @@ EOF
     udevadm control --reload
 }
 
+testcase_simultaneous_events_2() {
+    local disk expected i iterations key link num_part part partscript target timeout
+    local -a devices symlinks
+    local -A running
+
+    if [[ -v ASAN_OPTIONS || "$(systemd-detect-virt -v)" == "qemu" ]]; then
+        num_part=20
+        iterations=1
+        timeout=2400
+    else
+        num_part=100
+        iterations=3
+        timeout=300
+    fi
+
+    for disk in {0..9}; do
+        link="/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_deadbeeftest${disk}"
+        target="$(readlink -f "$link")"
+        if [[ ! -b "$target" ]]; then
+            echo "ERROR: failed to find the test SCSI block device $link"
+            return 1
+        fi
+
+        devices+=("$target")
+    done
+
+    symlinks=("/dev/disk/by-partlabel/testlabel")
+
+    partscript="$(mktemp)"
+
+    cat >"$partscript" <<EOF
+$(for ((part = 1; part <= num_part; part++)); do printf 'name="testlabel", size=1M\n'; done)
+EOF
+
+    echo "## $iterations iterations start: $(date '+%H:%M:%S.%N')"
+    for ((i = 1; i <= iterations; i++)); do
+
+        for disk in {0..9}; do
+            udevadm lock --device="${devices[$disk]}" sfdisk -q --delete "${devices[$disk]}" &
+            running[$disk]=$!
+        done
+
+        for key in "${!running[@]}"; do
+            wait "${running[$key]}"
+            unset "running[$key]"
+        done
+
+        for disk in {0..9}; do
+            udevadm lock --device="${devices[$disk]}" sfdisk -q -X gpt "${devices[$disk]}" <"$partscript" &
+            running[$disk]=$!
+        done
+
+        for key in "${!running[@]}"; do
+            wait "${running[$key]}"
+            unset "running[$key]"
+        done
+
+        udevadm wait --settle --timeout="$timeout" "${devices[@]}" "${symlinks[@]}"
+    done
+    echo "## $iterations iterations end: $(date '+%H:%M:%S.%N')"
+}
+
+testcase_simultaneous_events() {
+    testcase_simultaneous_events_1
+    testcase_simultaneous_events_2
+}
+
 testcase_lvm_basic() {
     local i iterations partitions part timeout
     local vgroup="MyTestGroup$RANDOM"
@@ -417,13 +485,33 @@ testcase_lvm_basic() {
     lvm vgs
     lvm vgchange -ay "$vgroup"
     lvm lvcreate -y -L 4M "$vgroup" -n mypart1
-    lvm lvcreate -y -L 8M "$vgroup" -n mypart2
+    lvm lvcreate -y -L 32M "$vgroup" -n mypart2
     lvm lvs
     udevadm wait --settle --timeout="$timeout" "/dev/$vgroup/mypart1" "/dev/$vgroup/mypart2"
     mkfs.ext4 -L mylvpart1 "/dev/$vgroup/mypart1"
     udevadm wait --settle --timeout="$timeout" "/dev/disk/by-label/mylvpart1"
     helper_check_device_symlinks "/dev/disk" "/dev/$vgroup"
     helper_check_device_units
+
+    # Mount mypart1 through by-label devlink
+    mkdir -p /tmp/mypart1-mount-point
+    mount /dev/disk/by-label/mylvpart1 /tmp/mypart1-mount-point
+    timeout 30 bash -c "while ! systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
+    # Extend the partition and check if the device and mount units are still active.
+    # See https://bugzilla.redhat.com/show_bug.cgi?id=2158628
+    # Note, the test below may be unstable with LVM2 without the following patch:
+    # https://github.com/lvmteam/lvm2/pull/105
+    # But, to reproduce the issue, udevd must start to process the first 'change' uevent
+    # earlier than extending the volume has been finished, and in most case, the extension
+    # is hopefully fast.
+    lvm lvextend -y --size 8M "/dev/$vgroup/mypart1"
+    udevadm wait --settle --timeout="$timeout" "/dev/disk/by-label/mylvpart1"
+    timeout 30 bash -c "while ! systemctl -q is-active '/dev/$vgroup/mypart1'; do sleep .2; done"
+    timeout 30 bash -c "while ! systemctl -q is-active /tmp/mypart1-mount-point; do sleep .2; done"
+    # Umount the partition, otherwise the underlying device unit will stay in
+    # the inactive state and not be collected, and helper_check_device_units() will fail.
+    systemctl show /tmp/mypart1-mount-point
+    umount /tmp/mypart1-mount-point
 
     # Rename partitions (see issue #24518)
     lvm lvrename "/dev/$vgroup/mypart1" renamed1
@@ -440,6 +528,42 @@ testcase_lvm_basic() {
     udevadm wait --settle --timeout="$timeout" "/dev/$vgroup/mypart1" "/dev/$vgroup/mypart2"
     helper_check_device_symlinks "/dev/disk" "/dev/$vgroup"
     helper_check_device_units
+
+    # Do not "unready" suspended encrypted devices w/o superblock info
+    # See:
+    #   - https://github.com/systemd/systemd/pull/24177
+    #   - https://bugzilla.redhat.com/show_bug.cgi?id=1985288
+    dd if=/dev/urandom of=/etc/lvm_keyfile bs=64 count=1 iflag=fullblock
+    chmod 0600 /etc/lvm_keyfile
+    # Intentionally use weaker cipher-related settings, since we don't care
+    # about security here as it's a throwaway LUKS partition
+    cryptsetup luksFormat -q --use-urandom --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+                          "/dev/$vgroup/mypart2" /etc/lvm_keyfile
+    # Mount the LUKS partition & create a filesystem on it
+    mkdir -p /tmp/lvmluksmnt
+    cryptsetup open --key-file=/etc/lvm_keyfile "/dev/$vgroup/mypart2" "lvmluksmap"
+    udevadm wait --settle --timeout="$timeout" "/dev/mapper/lvmluksmap"
+    mkfs.ext4 -L lvmluksfs "/dev/mapper/lvmluksmap"
+    udevadm wait --settle --timeout="$timeout" "/dev/disk/by-label/lvmluksfs"
+    # Make systemd "interested" in the mount by adding it to /etc/fstab
+    echo "/dev/disk/by-label/lvmluksfs /tmp/lvmluksmnt ext4 defaults 0 2" >>/etc/fstab
+    systemctl daemon-reload
+    mount "/tmp/lvmluksmnt"
+    mountpoint "/tmp/lvmluksmnt"
+    # Temporarily suspend the LUKS device and trigger udev - basically what `cryptsetup resize`
+    # does but in a more deterministic way suitable for a test/reproducer
+    for _ in {0..5}; do
+        dmsetup suspend "/dev/mapper/lvmluksmap"
+        udevadm trigger -v --settle "/dev/mapper/lvmluksmap"
+        dmsetup resume "/dev/mapper/lvmluksmap"
+        # The mount should survive this sequence of events
+        mountpoint "/tmp/lvmluksmnt"
+    done
+    # Cleanup
+    umount "/tmp/lvmluksmnt"
+    cryptsetup close "/dev/mapper/lvmluksmap"
+    sed -i "/lvmluksfs/d" "/etc/fstab"
+    systemctl daemon-reload
 
     # Disable the VG and check symlinks...
     lvm vgchange -an "$vgroup"

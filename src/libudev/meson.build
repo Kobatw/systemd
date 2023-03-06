@@ -2,17 +2,14 @@
 
 libudev_sources = files(
         'libudev-device.c',
-        'libudev-device-internal.h',
         'libudev-enumerate.c',
         'libudev-hwdb.c',
         'libudev-list.c',
-        'libudev-list-internal.h',
         'libudev-monitor.c',
         'libudev-queue.c',
         'libudev-util.c',
-        'libudev-util.h',
         'libudev.c',
-        'libudev.h')
+)
 
 ############################################################
 
@@ -46,7 +43,11 @@ libudev_pc = custom_target(
 ############################################################
 
 tests += [
-        [files('test-libudev.c'),
-         [libshared,
-          libudev_basic]],
+        {
+                'sources' : files('test-libudev.c'),
+                'link_with' : [
+                        libshared,
+                        libudev_basic,
+                ],
+        },
 ]

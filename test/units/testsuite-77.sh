@@ -16,15 +16,18 @@ read -r -u 4 text
 assert_eq "$text" "File"
 
 # Test for socket
-systemctl start testsuite-77-netcat.service
-systemctl start testsuite-77-socket.service
+systemctl start testsuite-77-server.socket
+systemd-run -p OpenFile=/tmp/test.sock:socket:read-only \
+            --wait \
+            --pipe \
+            /usr/lib/systemd/tests/testdata/units/testsuite-77-client.sh
 
 # Tests for D-Bus
 diff <(systemctl show -p OpenFile testsuite-77) - <<EOF
 OpenFile=/test-77-open.dat:open:read-only
 OpenFile=/test-77-file.dat
 EOF
-echo "New" > /test-77-new-file.dat
+echo "New" >/test-77-new-file.dat
 systemd-run --wait -p OpenFile=/test-77-new-file.dat:new-file:read-only "$(dirname "$0")"/testsuite-77-run.sh
 
 assert_rc 202 systemd-run --wait -p OpenFile=/test-77-new-file.dat:new-file:read-only -p OpenFile=/test-77-mssing-file.dat:missing-file:read-only "$(dirname "$0")"/testsuite-77-run.sh

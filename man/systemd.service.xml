@@ -406,7 +406,7 @@
 
               <row>
                 <entry><literal>+</literal></entry>
-                <entry>If the executable path is prefixed with <literal>+</literal> then the process is executed with full privileges. In this mode privilege restrictions configured with <varname>User=</varname>, <varname>Group=</varname>, <varname>CapabilityBoundingSet=</varname> or the various file system namespacing options (such as <varname>PrivateDevices=</varname>, <varname>PrivateTmp=</varname>) are not applied to the invoked command line (but still affect any other <varname>ExecStart=</varname>, <varname>ExecStop=</varname>, … lines).</entry>
+                <entry>If the executable path is prefixed with <literal>+</literal> then the process is executed with full privileges. In this mode privilege restrictions configured with <varname>User=</varname>, <varname>Group=</varname>, <varname>CapabilityBoundingSet=</varname> or the various file system namespacing options (such as <varname>PrivateDevices=</varname>, <varname>PrivateTmp=</varname>) are not applied to the invoked command line (but still affect any other <varname>ExecStart=</varname>, <varname>ExecStop=</varname>, … lines). However, note that this will not bypass options that apply to the whole control group, such as <varname>DevicePolicy=</varname>, see <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry> for the full list.</entry>
               </row>
 
               <row>
@@ -519,7 +519,7 @@
 
         <programlisting>ExecReload=kill -HUP $MAINPID</programlisting>
 
-        <para>Note however that reloading a daemon by enqueing a signal (as with the example line above) is
+        <para>Note however that reloading a daemon by enqueuing a signal (as with the example line above) is
         usually not a good choice, because this is an asynchronous operation and hence not suitable when
         ordering reloads of multiple services against each other. It is thus strongly recommended to either
         use <varname>Type=</varname><option>notify-reload</option> in place of
@@ -612,11 +612,12 @@
 
       <varlistentry>
         <term><varname>TimeoutStartSec=</varname></term>
-        <listitem><para>Configures the time to wait for start-up. If a daemon service does not signal start-up
-        completion within the configured time, the service will be considered failed and will be shut down again. The
-        precise action depends on the <varname>TimeoutStartFailureMode=</varname> option. Takes a unit-less value in
-        seconds, or a time span value such as "5min 20s". Pass <literal>infinity</literal> to disable the timeout logic.
-        Defaults to <varname>DefaultTimeoutStartSec=</varname> from the manager configuration file, except when
+        <listitem><para>Configures the time to wait for start-up. If a daemon service does not signal
+        start-up completion within the configured time, the service will be considered failed and will be
+        shut down again. The precise action depends on the <varname>TimeoutStartFailureMode=</varname>
+        option. Takes a unit-less value in seconds, or a time span value such as "5min 20s". Pass
+        <literal>infinity</literal> to disable the timeout logic. Defaults to
+        <varname>DefaultTimeoutStartSec=</varname> set in the manager, except when
         <varname>Type=oneshot</varname> is used, in which case the timeout is disabled by default (see
         <citerefentry><refentrytitle>systemd-system.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>).
         </para>

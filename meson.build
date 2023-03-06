@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 project('systemd', 'c',
-        version : '252',
+        version : '253',
         license : 'LGPLv2+',
         default_options: [
                 'c_std=gnu11',
@@ -13,8 +13,8 @@ project('systemd', 'c',
         meson_version : '>= 0.53.2',
        )
 
-libsystemd_version = '0.35.0'
-libudev_version = '1.7.5'
+libsystemd_version = '0.36.0'
+libudev_version = '1.7.6'
 
 conf = configuration_data()
 conf.set_quoted('PROJECT_URL', 'https://systemd.io/')
@@ -184,7 +184,6 @@ sysctldir = prefixdir / 'lib/sysctl.d'
 binfmtdir = prefixdir / 'lib/binfmt.d'
 modulesloaddir = prefixdir / 'lib/modules-load.d'
 networkdir = rootprefixdir / 'lib/systemd/network'
-pkgincludedir = includedir / 'systemd'
 systemgeneratordir = rootlibexecdir / 'system-generators'
 usergeneratordir = prefixdir / 'lib/systemd/user-generators'
 systemenvgeneratordir = prefixdir / 'lib/systemd/system-environment-generators'
@@ -295,7 +294,6 @@ conf.set_quoted('USER_TMPFILES_DIR',                          usertmpfilesdir)
 conf.set_quoted('UDEVLIBEXECDIR',                             udevlibexecdir)
 conf.set_quoted('UDEV_HWDB_DIR',                              udevhwdbdir)
 conf.set_quoted('UDEV_RULES_DIR',                             udevrulesdir)
-conf.set_quoted('UPDATE_HELPER_USER_TIMEOUT',                 get_option('update-helper-user-timeout'))
 conf.set_quoted('USER_CONFIG_UNIT_DIR',                       pkgsysconfdir / 'user')
 conf.set_quoted('USER_DATA_UNIT_DIR',                         userunitdir)
 conf.set_quoted('USER_ENV_GENERATOR_DIR',                     userenvgeneratordir)
@@ -311,12 +309,15 @@ conf.set10('MEMORY_ACCOUNTING_DEFAULT',                       memory_accounting_
 conf.set('STATUS_UNIT_FORMAT_DEFAULT',                        'STATUS_UNIT_FORMAT_' + status_unit_format_default.to_upper())
 conf.set_quoted('STATUS_UNIT_FORMAT_DEFAULT_STR',             status_unit_format_default)
 
+conf.set('DEFAULT_TIMEOUT_SEC',                               get_option('default-timeout-sec'))
+conf.set('DEFAULT_USER_TIMEOUT_SEC',                          get_option('default-user-timeout-sec'))
+conf.set('UPDATE_HELPER_USER_TIMEOUT_SEC',                    get_option('update-helper-user-timeout-sec'))
+
 conf.set10('FIRST_BOOT_FULL_PRESET',                          get_option('first-boot-full-preset'))
 
 #####################################################################
 
 cc = meson.get_compiler('c')
-pkgconfig = import('pkgconfig')
 meson_build_sh = find_program('tools/meson-build.sh')
 
 want_tests = get_option('tests')
@@ -353,11 +354,14 @@ basic_disabled_warnings = [
 ]
 
 possible_common_cc_flags = [
+        '-Warray-bounds',     # clang
+        '-Warray-bounds=2',
         '-Wdate-time',
         '-Wendif-labels',
         '-Werror=format=2',
         '-Werror=format-signedness',
         '-Werror=implicit-function-declaration',
+        '-Werror=implicit-int',
         '-Werror=incompatible-pointer-types',
         '-Werror=int-conversion',
         '-Werror=overflow',
@@ -385,10 +389,13 @@ possible_common_cc_flags = [
         '-Wsuggest-attribute=noreturn',
         '-Wunused-function',
         '-Wwrite-strings',
+        '-Wzero-length-bounds',
 
         # negative arguments are correctly detected starting with meson 0.46.
         '-Wno-error=#warnings',  # clang
         '-Wno-string-plus-int',  # clang
+
+        '-fstrict-flex-arrays',
 ]
 
 c_args = get_option('c_args')
@@ -716,24 +723,6 @@ endif
 
 ############################################################
 
-python = find_program('python3')
-if run_command(python, '-c', 'import jinja2', check : false).returncode() != 0
-        error('python3 jinja2 missing')
-endif
-
-python_310 = run_command(python, '-c',
-                         'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)',
-                         check : false).returncode() == 0
-if get_option('ukify') == 'auto'
-    want_ukify = python_310
-elif get_option('ukify') == 'true' and not python310
-    error('ukify requires Python >= 3.10')
-else
-    want_ukify = get_option('ukify') == 'true'
-endif
-
-############################################################
-
 gperf = find_program('gperf')
 
 gperf_test_format = '''
@@ -826,7 +815,7 @@ endif
 time_epoch = get_option('time-epoch')
 if time_epoch <= 0
         time_epoch = run_command(sh, '-c', 'echo "$SOURCE_DATE_EPOCH"', check : true).stdout().strip()
-        if time_epoch == '' and git.found() and fs.exists('.git')
+        if time_epoch == '' and git.found() and fs.is_dir('.git')
                 # If we're in a git repository, use the creation time of the latest git tag.
                 latest_tag = run_command(git, 'describe', '--abbrev=0', '--tags',
                                          check : false)
@@ -996,6 +985,9 @@ conf.set_quoted('SYSTEMD_DEFAULT_LOCALE', default_locale)
 nspawn_locale = get_option('nspawn-locale')
 conf.set_quoted('SYSTEMD_NSPAWN_LOCALE', nspawn_locale)
 
+default_keymap = get_option('default-keymap')
+conf.set_quoted('SYSTEMD_DEFAULT_KEYMAP', default_keymap)
+
 localegen_path = get_option('localegen-path')
 if localegen_path != ''
         conf.set_quoted('LOCALEGEN_PATH', localegen_path)
@@ -1028,8 +1020,6 @@ endforeach
 conf.set10('ENABLE_DEBUG_HASHMAP', enable_debug_hashmap)
 conf.set10('ENABLE_DEBUG_MMAP_CACHE', enable_debug_mmap_cache)
 conf.set10('ENABLE_DEBUG_SIPHASH', enable_debug_siphash)
-
-conf.set10('VALGRIND', get_option('valgrind'))
 conf.set10('LOG_TRACE', get_option('log-trace'))
 
 default_user_path = get_option('user-path')
@@ -1108,12 +1098,9 @@ else
                         if clang_found
                                 clang = r.path()
                         endif
-                        # Assume that the required flags are supported by the found clang.
-                        clang_supports_flags = clang_found
                 else
                         clang_found = true
                         clang = cc.cmd_array()
-                        clang_supports_flags = cc.has_argument('-Wno-compare-distinct-pointer-types')
                 endif
 
                 if clang_found
@@ -1947,7 +1934,9 @@ conf.set10('SYSTEMD_SLOW_TESTS_DEFAULT', slow_tests)
 ############################################################
 
 tests = []
+simple_tests = []
 fuzzers = []
+simple_fuzzers = []
 catalogs = []
 
 ############################################################
@@ -1958,6 +1947,21 @@ subdir('src/boot/efi')
 
 ############################################################
 
+pymod = import('python')
+python = pymod.find_installation('python3', required : true, modules : ['jinja2'])
+python_39 = python.language_version().version_compare('>=3.9')
+
+if get_option('ukify') == 'auto'
+    want_ukify = python_39  and conf.get('HAVE_GNU_EFI') == 1
+elif get_option('ukify') == 'true' and (not python_39 or conf.get('HAVE_GNU_EFI') != 1)
+    error('ukify requires Python >= 3.9 and GNU EFI')
+else
+    want_ukify = get_option('ukify') == 'true'
+endif
+conf.set10('ENABLE_UKIFY', want_ukify)
+
+############################################################
+#
 generate_gperfs = find_program('tools/generate-gperfs.py')
 make_autosuspend_rules_py = find_program('tools/make-autosuspend-rules.py')
 make_directive_index_py = find_program('tools/make-directive-index.py')
@@ -2109,7 +2113,7 @@ install_libudev_static = static_library(
 
 if conf.get('HAVE_LIBCRYPTSETUP_PLUGINS') == 1
         if conf.get('HAVE_TPM2') == 1
-                cryptsetup_token_systemd_tpm2 = shared_library(
+                shared_library(
                         'cryptsetup-token-systemd-tpm2',
                         cryptsetup_token_systemd_tpm2_sources,
                         include_directories : includes,
@@ -2127,7 +2131,7 @@ if conf.get('HAVE_LIBCRYPTSETUP_PLUGINS') == 1
         endif
 
         if conf.get('HAVE_LIBFIDO2') == 1
-                cryptsetup_token_systemd_fido2 = shared_library(
+                shared_library(
                         'cryptsetup-token-systemd-fido2',
                         cryptsetup_token_systemd_fido2_sources,
                         include_directories : includes,
@@ -2145,7 +2149,7 @@ if conf.get('HAVE_LIBCRYPTSETUP_PLUGINS') == 1
         endif
 
         if conf.get('HAVE_P11KIT') == 1
-                cryptsetup_token_systemd_pkcs11 = shared_library(
+                shared_library(
                         'cryptsetup-token-systemd-pkcs11',
                         cryptsetup_token_systemd_pkcs11_sources,
                         include_directories : includes,
@@ -2173,6 +2177,7 @@ subdir('src/journal')
 subdir('src/libsystemd-network')
 
 subdir('src/analyze')
+subdir('src/boot')
 subdir('src/busctl')
 subdir('src/coredump')
 subdir('src/cryptenroll')
@@ -2608,22 +2613,7 @@ if conf.get('HAVE_BLKID') == 1 and conf.get('HAVE_GNU_EFI') == 1
 
         exe = executable(
                 'bootctl',
-                ['src/boot/bootctl.c',
-                 'src/boot/bootctl.h',
-                 'src/boot/bootctl-install.c',
-                 'src/boot/bootctl-install.h',
-                 'src/boot/bootctl-random-seed.c',
-                 'src/boot/bootctl-random-seed.h',
-                 'src/boot/bootctl-reboot-to-firmware.c',
-                 'src/boot/bootctl-reboot-to-firmware.h',
-                 'src/boot/bootctl-set-efivar.c',
-                 'src/boot/bootctl-set-efivar.h',
-                 'src/boot/bootctl-status.c',
-                 'src/boot/bootctl-status.h',
-                 'src/boot/bootctl-systemd-efi-options.c',
-                 'src/boot/bootctl-systemd-efi-options.h',
-                 'src/boot/bootctl-util.c',
-                 'src/boot/bootctl-util.h'],
+                bootctl_sources,
                 include_directories : includes,
                 link_with : [boot_link_with],
                 dependencies : [libblkid,
@@ -4049,6 +4039,7 @@ public_programs += exe
 if want_tests != 'false' and want_kernel_install
         test('test-kernel-install',
              test_kernel_install_sh,
+             env : test_env,
              args : [exe.full_path(), loaderentry_install])
 endif
 
@@ -4085,57 +4076,51 @@ if '-O2' in c_args and '-flto=auto' in c_args
         test_cflags += cc.first_supported_argument('-Wno-maybe-uninitialized')
 endif
 
-foreach tuple : tests
-        sources = tuple[0]
-        link_with = tuple.length() > 1 and tuple[1].length() > 0 ? tuple[1] : [libshared]
-        dependencies = tuple.length() > 2 ? tuple[2] : []
-        incs = tuple.length() > 3 and tuple[3].length() > 0 ? tuple[3] : includes
-        condition = tuple.length() > 4 ? tuple[4] : ''
-        type = tuple.length() > 5 ? tuple[5] : ''
-        defs = tuple.length() > 6 ? tuple[6] : []
-        defs += test_cflags
-        parallel = tuple.length() > 7 ? tuple[7] : true
-        timeout = 30
+foreach test : simple_tests
+        tests += { 'sources' : [test] }
+endforeach
+
+foreach test : tests
+        sources = test.get('sources')
+        condition = test.get('condition', '')
+        type = test.get('type', '')
+        base = test.get('base', {})
 
         # FIXME: Use fs.stem() with meson >= 0.54.0
         name = '@0@'.format(sources[0]).split('/')[-1].split('.')[0]
-        if type.startswith('timeout=')
-                timeout = type.split('=')[1].to_int()
-                type = ''
-        endif
 
         suite = fs.name(fs.parent('@0@'.format(sources[0])))
         # FIXME: Use str.replace() with meson >= 0.58.0
         suite = suite.split('sd-')[-1]
 
-        if condition == '' or conf.get(condition) == 1
-                exe = executable(
-                        name,
-                        sources,
-                        include_directories : incs,
-                        link_with : link_with,
-                        dependencies : [versiondep,
-                                        dependencies],
-                        c_args : defs,
-                        build_by_default : want_tests != 'false',
-                        install_rpath : rootpkglibdir,
-                        install : install_tests,
-                        install_dir : testsdir / type,
-                        link_depends : runtest_env)
-
-                if type == 'manual'
-                        message('@0@ is a manual test'.format(name))
-                elif type == 'unsafe' and want_tests != 'unsafe'
-                        message('@0@ is an unsafe test'.format(name))
-                elif want_tests != 'false'
-                        test(name, exe,
-                             env : test_env,
-                             timeout : timeout,
-                             suite : suite,
-                             is_parallel : parallel)
-                endif
-        else
+        if condition != '' and conf.get(condition) == 0
                 message('Not compiling @0@ because @1@ is not true'.format(name, condition))
+                continue
+        endif
+
+        exe = executable(
+                name,
+                sources,
+                include_directories : [base.get('includes', []), test.get('includes', includes)],
+                link_with : [base.get('link_with', []), test.get('link_with', libshared)],
+                dependencies : [versiondep, base.get('dependencies', []), test.get('dependencies', [])],
+                c_args : [test_cflags, test.get('c_args', [])],
+                build_by_default : want_tests != 'false',
+                install_rpath : rootpkglibdir,
+                install : install_tests,
+                install_dir : testsdir / type,
+                link_depends : runtest_env)
+
+        if type == 'manual'
+                message('@0@ is a manual test'.format(name))
+        elif type == 'unsafe' and want_tests != 'unsafe'
+                message('@0@ is an unsafe test'.format(name))
+        elif want_tests != 'false'
+                test(name, exe,
+                        env : test_env,
+                        timeout : test.get('timeout', 30),
+                        suite : suite,
+                        is_parallel : test.get('parallel', true))
         endif
 endforeach
 
@@ -4193,14 +4178,16 @@ endif
 
 ############################################################
 
+foreach fuzzer : simple_fuzzers
+        fuzzers += { 'sources' : [fuzzer] }
+endforeach
+
 fuzzer_exes = []
 
-foreach tuple : fuzzers
-        sources = tuple[0]
-        link_with = tuple.length() > 1 and tuple[1].length() > 0 ? tuple[1] : [libshared]
-        dependencies = tuple.length() > 2 ? tuple[2] : []
-        incs = tuple.length() > 3 and tuple[3].length() > 0 ? tuple[3] : includes
-        defs = tuple.length() > 4 ? tuple[4] : []
+foreach fuzzer : fuzzers
+        sources = fuzzer.get('sources')
+        base = fuzzer.get('base', {})
+        dependencies = [base.get('dependencies', []), fuzzer.get('dependencies', [])]
         link_args = []
 
         if want_ossfuzz
@@ -4212,7 +4199,7 @@ foreach tuple : fuzzers
                         link_args += ['-fsanitize=fuzzer']
                 endif
         else
-                sources += 'src/fuzz/fuzz-main.c'
+                sources += files('src/fuzz/fuzz-main.c')
         endif
         sources += fuzz_generated_directives
 
@@ -4222,11 +4209,14 @@ foreach tuple : fuzzers
         exe = executable(
                 name,
                 sources,
-                include_directories : [incs, include_directories('src/fuzz')],
-                link_with : link_with,
-                dependencies : [dependencies,
-                                versiondep],
-                c_args : defs + test_cflags,
+                include_directories : [
+                        base.get('includes', []),
+                        fuzzer.get('includes', includes),
+                        include_directories('src/fuzz'),
+                ],
+                link_with : [base.get('link_with', []), fuzzer.get('link_with', libshared)],
+                dependencies : [dependencies, versiondep],
+                c_args : [test_cflags, fuzzer.get('c_args', [])],
                 link_args: link_args,
                 install : false,
                 build_by_default : fuzzer_build)
@@ -4617,8 +4607,9 @@ foreach tuple : [
         ['debug hashmap'],
         ['debug mmap cache'],
         ['debug siphash'],
-        ['valgrind',               conf.get('VALGRIND') == 1],
         ['trace logging',          conf.get('LOG_TRACE') == 1],
+        ['slow tests',             slow_tests],
+        ['fuzz tests',             fuzz_tests],
         ['install tests',          install_tests],
         ['link-udev-shared',       get_option('link-udev-shared')],
         ['link-systemctl-shared',  get_option('link-systemctl-shared')],

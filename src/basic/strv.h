@@ -29,7 +29,10 @@ char** strv_free_erase(char **l);
 DEFINE_TRIVIAL_CLEANUP_FUNC(char**, strv_free_erase);
 #define _cleanup_strv_free_erase_ _cleanup_(strv_free_erasep)
 
-char** strv_copy(char * const *l);
+char** strv_copy_n(char * const *l, size_t n);
+static inline char** strv_copy(char * const *l) {
+        return strv_copy_n(l, SIZE_MAX);
+}
 size_t strv_length(char * const *l) _pure_;
 
 int strv_extend_strv(char ***a, char * const *b, bool filter_duplicates);
@@ -240,6 +243,8 @@ static inline bool strv_fnmatch_or_empty(char* const* patterns, const char *s, i
 char** strv_skip(char **l, size_t n);
 
 int strv_extend_n(char ***l, const char *value, size_t n);
+
+int strv_extend_assignment(char ***l, const char *lhs, const char *rhs);
 
 int fputstrv(FILE *f, char * const *l, const char *separator, bool *space);
 

@@ -93,6 +93,8 @@ struct DissectedImage {
         DissectedPartition partitions[_PARTITION_DESIGNATOR_MAX];
         DecryptedImage *decrypted_image;
 
+        uint32_t sector_size;
+
         /* Meta information extracted from /etc/os-release and similar */
         char *image_name;
         sd_id128_t image_uuid;
@@ -158,6 +160,8 @@ int dissected_image_mount_and_warn(DissectedImage *m, const char *where, uid_t u
 
 int dissected_image_acquire_metadata(DissectedImage *m, DissectImageFlags extra_flags);
 
+Architecture dissected_image_architecture(DissectedImage *m);
+
 DecryptedImage* decrypted_image_ref(DecryptedImage *p);
 DecryptedImage* decrypted_image_unref(DecryptedImage *p);
 DEFINE_TRIVIAL_CLEANUP_FUNC(DecryptedImage*, decrypted_image_unref);
@@ -181,8 +185,11 @@ bool dissected_image_verity_candidate(const DissectedImage *image, PartitionDesi
 bool dissected_image_verity_ready(const DissectedImage *image, PartitionDesignator d);
 bool dissected_image_verity_sig_ready(const DissectedImage *image, PartitionDesignator d);
 
-int mount_image_privately_interactively(const char *path, DissectImageFlags flags, char **ret_directory, LoopDevice **ret_loop_device);
+int mount_image_privately_interactively(const char *path, DissectImageFlags flags, char **ret_directory, int *ret_dir_fd, LoopDevice **ret_loop_device);
 
 int verity_dissect_and_mount(int src_fd, const char *src, const char *dest, const MountOptions *options, const char *required_host_os_release_id, const char *required_host_os_release_version_id, const char *required_host_os_release_sysext_level, const char *required_sysext_scope);
 
 int dissect_fstype_ok(const char *fstype);
+
+int probe_sector_size(int fd, uint32_t *ret);
+int probe_sector_size_prefer_ioctl(int fd, uint32_t *ret);

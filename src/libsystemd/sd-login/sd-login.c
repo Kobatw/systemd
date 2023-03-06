@@ -22,6 +22,7 @@
 #include "macro.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "process-util.h"
 #include "socket-util.h"
 #include "stdio-util.h"
 #include "string-util.h"
@@ -131,6 +132,206 @@ _public_ int sd_pid_get_cgroup(pid_t pid, char **cgroup) {
         }
 
         *cgroup = c;
+        return 0;
+}
+
+_public_ int sd_pidfd_get_session(int pidfd, char **ret_session) {
+        _cleanup_free_ char *session = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_session, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_session(pid, &session);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_session = TAKE_PTR(session);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_unit(int pidfd, char **ret_unit) {
+        _cleanup_free_ char *unit = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_unit, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_unit(pid, &unit);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_unit = TAKE_PTR(unit);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_user_unit(int pidfd, char **ret_unit) {
+        _cleanup_free_ char *unit = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_unit, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_user_unit(pid, &unit);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_unit = TAKE_PTR(unit);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_machine_name(int pidfd, char **ret_name) {
+        _cleanup_free_ char *name = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_name, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_machine_name(pid, &name);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_name = TAKE_PTR(name);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_slice(int pidfd, char **ret_slice) {
+        _cleanup_free_ char *slice = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_slice, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_slice(pid, &slice);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_slice = TAKE_PTR(slice);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_user_slice(int pidfd, char **ret_slice) {
+        _cleanup_free_ char *slice = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_slice, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_user_slice(pid, &slice);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_slice = TAKE_PTR(slice);
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_owner_uid(int pidfd, uid_t *ret_uid) {
+        uid_t uid;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EINVAL);
+        assert_return(ret_uid, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_owner_uid(pid, &uid);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_uid = uid;
+
+        return 0;
+}
+
+_public_ int sd_pidfd_get_cgroup(int pidfd, char **ret_cgroup) {
+        _cleanup_free_ char *cgroup = NULL;
+        pid_t pid;
+        int r;
+
+        assert_return(pidfd >= 0, -EBADF);
+        assert_return(ret_cgroup, -EINVAL);
+
+        r = pidfd_get_pid(pidfd, &pid);
+        if (r < 0)
+                return r;
+
+        r = sd_pid_get_cgroup(pid, &cgroup);
+        if (r < 0)
+                return r;
+
+        r = pidfd_verify_pid(pidfd, pid);
+        if (r < 0)
+                return r;
+
+        *ret_cgroup = TAKE_PTR(cgroup);
+
         return 0;
 }
 
@@ -299,6 +500,36 @@ _public_ int sd_uid_get_display(uid_t uid, char **session) {
 
         *session = TAKE_PTR(s);
 
+        return 0;
+}
+
+_public_ int sd_uid_get_login_time(uid_t uid, uint64_t *usec) {
+        _cleanup_free_ char *p = NULL, *s = NULL, *rt = NULL;
+        usec_t t;
+        int r;
+
+        assert_return(usec, -EINVAL);
+
+        r = file_of_uid(uid, &p);
+        if (r < 0)
+                return r;
+
+        r = parse_env_file(NULL, p, "STATE", &s, "REALTIME", &rt);
+        if (r == -ENOENT)
+                return -ENXIO;
+        if (r < 0)
+                return r;
+        if (isempty(s) || isempty(rt))
+                return -EIO;
+
+        if (!STR_IN_SET(s, "active", "online"))
+                return -ENXIO;
+
+        r = safe_atou64(rt, &t);
+        if (r < 0)
+                return r;
+
+        *usec = t;
         return 0;
 }
 
@@ -541,8 +772,39 @@ static int session_get_string(const char *session, const char *field, char **val
         return 0;
 }
 
+_public_ int sd_session_get_username(const char *session, char **username) {
+        return session_get_string(session, "USER", username);
+}
+
 _public_ int sd_session_get_seat(const char *session, char **seat) {
         return session_get_string(session, "SEAT", seat);
+}
+
+_public_ int sd_session_get_start_time(const char *session, uint64_t *usec) {
+        _cleanup_free_ char *p = NULL, *s = NULL;
+        usec_t t;
+        int r;
+
+        assert_return(usec, -EINVAL);
+
+        r = file_of_session(session, &p);
+        if (r < 0)
+                return r;
+
+        r = parse_env_file(NULL, p, "REALTIME", &s);
+        if (r == -ENOENT)
+                return -ENXIO;
+        if (r < 0)
+                return r;
+        if (isempty(s))
+                return -EIO;
+
+        r = safe_atou64(s, &t);
+        if (r < 0)
+                return r;
+
+        *usec = t;
+        return 0;
 }
 
 _public_ int sd_session_get_tty(const char *session, char **tty) {
